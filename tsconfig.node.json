@@ -8,6 +8,7 @@
 
     /* Bundler mode */
     "module": "nodenext",
+    "esModuleInterop": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",

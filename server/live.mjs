@@ -18,6 +18,7 @@ import { createServer } from "node:http";
 import { createLineSplitter } from "./lineSplitter.mjs";
 import { resolveSessionPath } from "./sessionPath.mjs";
 import { listSessions } from "./sessionsList.mjs";
+import { readSubagentSidecars } from "./subagents.mjs";
 
 const PORT = 4517;
 // Domyślnie tylko pętla lokalna; kontener ustawia GLASSBOX_HOST=0.0.0.0 (port
@@ -198,6 +199,33 @@ const server = createServer((req, res) => {
     res
       .writeHead(200, { "Content-Type": "application/json", ...corsHeaders(req) })
       .end(JSON.stringify(sessions));
+    return;
+  }
+
+  if (url.pathname === "/subagents") {
+    // Sidecary subagentów sesji jedną odpowiedzią JSON — UI podaje je parserowi
+    // obok pliku głównego (parseSession(main, subagents)). ponytail: odczyt
+    // jednorazowy, bez śledzenia przyrostu; tail sidecarów przez SSE, gdy live
+    // subagentów zacznie realnie przeszkadzać.
+    let absPath;
+    if (singleFilePath) {
+      absPath = singleFilePath;
+    } else {
+      const session = url.searchParams.get("session");
+      if (!sessionsDir || !session) {
+        res.writeHead(400).end("brak parametru ?session=");
+        return;
+      }
+      const resolved = resolveSessionPath(sessionsDir, session);
+      if (!resolved || !existsSync(resolved)) {
+        res.writeHead(404).end("sesja nie istnieje");
+        return;
+      }
+      absPath = resolved;
+    }
+    res
+      .writeHead(200, { "Content-Type": "application/json", ...corsHeaders(req) })
+      .end(JSON.stringify(readSubagentSidecars(absPath)));
     return;
   }
 
