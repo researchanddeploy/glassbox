@@ -98,3 +98,26 @@ pollingu:
 Skrypt jest fire-and-forget (`curl` z timeoutem 1s, zawsze `exit 0`) — nigdy
 nie blokuje ani nie przerywa wykonania Claude Code, nawet gdy serwer live nie
 działa.
+
+## Warstwa izolacji
+
+Każdy węzeł grafu niesie `sandbox: SandboxInfo` (`src/parser/sandbox.ts`) —
+typ izolacji i przekroczenia granicy, wyznaczone z markerów w `tool_use.input`
+zaobserwowanych empirycznie na realnych transkryptach (nigdy przez zgadywanie —
+brak sygnału daje `isolation: null`). Subagenci z izolacją `worktree`/`container`
+dostają obrys grupy (React Flow group node, `parentId`+`extent`) obejmujący ich
+własne tool_calle i pliki; pojedyncze wywołania mają badge (`unsandboxed` — czerwony,
+`network`/`container`/`filesystem-out` — inne kolory), legenda w rogu kanwy, a
+panel szczegółów dostał sekcję „Izolacja”.
+
+| Marker | Źródło | Klasyfikacja |
+|---|---|---|
+| `Bash.input.dangerouslyDisableSandbox === true` | schemat Bash | `isolation: unsandboxed` + `filesystem-out` |
+| `Bash.input.command` zawiera `curl`/`wget` | transkrypt bieżącej sesji (curl→npmjs) | `network` |
+| `Bash.input.command` zawiera `docker`/`orb`/`orbctl` | specyfikacja zadania (brak w zbadanych transkryptach) | `container` |
+| `WebFetch`/`WebSearch`/`mcp__*` (w tym tavily) | transkrypt bieżącej sesji (2× WebFetch) | `network` |
+| `Agent.input.isolation === "worktree"` | schemat narzędzia Agent (brak w zbadanych transkryptach) | `isolation: worktree` |
+| `Agent.input.isolation === "remote"` | schemat narzędzia Agent | `isolation: container` (mapowanie, uproszczenie) |
+
+Pełna metodologia i cytaty ze zbadanych transkryptów — komentarz na górze
+`src/parser/sandbox.ts`.
