@@ -52,6 +52,15 @@ export function DetailPanel({ node, onClose, sessionStartedAt }: DetailPanelProp
         <Row label="Koszt" value={cost !== null ? formatUsd(cost) : "—"} />
       </dl>
 
+      <h3 style={{ fontSize: 13, marginTop: 16 }}>Izolacja</h3>
+      <dl style={{ fontSize: 13, color: "#333" }}>
+        <Row label="Typ" value={node.sandbox.isolation ?? "—"} />
+        <Row
+          label="Przekroczenia granicy"
+          value={node.sandbox.boundaryCrossings.length > 0 ? node.sandbox.boundaryCrossings.join(", ") : "—"}
+        />
+      </dl>
+
       {node.detail && (
         <>
           <h3 style={{ fontSize: 13, marginTop: 16 }}>Input</h3>

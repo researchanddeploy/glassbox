@@ -3,8 +3,8 @@ import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge } from "
 import "@xyflow/react/dist/style.css";
 import { parseSession } from "./parser";
 import type { GraphNode, SessionMeta } from "./parser/types";
-import { layoutGraph } from "./layout/elkLayout";
-import { AgentNode, FileNode, SessionNode, ToolCallNode } from "./nodes/nodeCards";
+import { layoutGraph, wrapIsolatedGroups } from "./layout/elkLayout";
+import { AgentNode, FileNode, IsolationGroupNode, SessionNode, ToolCallNode } from "./nodes/nodeCards";
 import { DetailPanel } from "./DetailPanel";
 import { Scrubber } from "./Scrubber";
 import { aggregateSessionCost, formatUsd } from "./pricing";
@@ -15,11 +15,53 @@ const ACTIVE_GLOW = "0 0 0 3px #aa3bff, 0 0 18px 5px rgba(170,59,255,0.55)";
 const LIVE_URL = "http://localhost:4517/events";
 const LIVE_DEBOUNCE_MS = 500;
 
+const LEGEND_ITEMS = [
+  { label: "unsandboxed", color: "#d9455f" },
+  { label: "network", color: "#4f7cff" },
+  { label: "container", color: "#aa3bff" },
+];
+
+/** Legenda badge'y granicy sandboxa, w rogu kanwy. */
+function Legend() {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 12,
+        right: 12,
+        zIndex: 5,
+        background: "#fff",
+        border: "1px solid #e5e4e7",
+        borderRadius: 8,
+        padding: "8px 10px",
+        fontSize: 11,
+        color: "#333",
+        boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 4, color: "#6b6375", textTransform: "uppercase", fontSize: 10 }}>
+        Granica sandboxa
+      </div>
+      {LEGEND_ITEMS.map((item) => (
+        <div key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: item.color, flexShrink: 0 }} />
+          {item.label}
+        </div>
+      ))}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+        <span style={{ width: 14, height: 8, border: "1.5px dashed #4f7cff", flexShrink: 0 }} />
+        worktree/container (obrys)
+      </div>
+    </div>
+  );
+}
+
 const nodeTypes = {
   session: SessionNode,
   agent: AgentNode,
   tool_call: ToolCallNode,
   file: FileNode,
+  isolationGroup: IsolationGroupNode,
 };
 
 export default function App() {
@@ -48,7 +90,8 @@ export default function App() {
     setError(null);
     try {
       const graph = parseSession(text);
-      const { nodes, edges } = await layoutGraph(graph.nodes, graph.edges);
+      const { nodes: flatNodes, edges } = await layoutGraph(graph.nodes, graph.edges);
+      const nodes = wrapIsolatedGroups(graph.nodes, graph.edges, flatNodes);
       const ts = Array.from(
         new Set(graph.nodes.map((n) => toEpoch(n.meta.timestamp)).filter((t): t is number => t !== null)),
       ).sort((a, b) => a - b);
@@ -120,6 +163,7 @@ export default function App() {
     let active: GraphNode | null = null;
     let activeEpoch = -Infinity;
     for (const n of flowNodes) {
+      if (n.type === "isolationGroup") continue; // obrys grupy nie ma własnego czasu — zawsze widoczny
       const gn = (n.data as { node: GraphNode }).node;
       const epoch = toEpoch(gn.meta.timestamp);
       if (epoch !== null && epoch > currentTime) {
@@ -261,12 +305,16 @@ export default function App() {
             nodes={styledNodes}
             edges={styledEdges}
             nodeTypes={nodeTypes}
-            onNodeClick={(_, n) => setSelected((n.data as { node: GraphNode }).node)}
+            onNodeClick={(_, n) => {
+              if (n.type === "isolationGroup") return; // obrys grupy nie ma panelu szczegółów
+              setSelected((n.data as { node: GraphNode }).node);
+            }}
             fitView
           >
             <Background />
             <Controls />
             <MiniMap />
+            <Legend />
           </ReactFlow>
         )}
       </div>
