@@ -1,6 +1,13 @@
 :root {
+  /* Tokeny palety Glassboxa — kanały wizualne czytają je zamiast surowych hexów. */
+  --gb-ink: #08060d;
+  --gb-accent: #aa3bff;
+  --gb-accent-soft: rgba(170, 59, 255, 0.55);
+  --gb-sel-dim-opacity: 0.35;
+  --gb-replay-dim-opacity: 0.12;
+
   font: 14px/1.4 system-ui, "Segoe UI", Roboto, sans-serif;
-  color: #08060d;
+  color: var(--gb-ink);
   background: #fff;
 }
 
@@ -15,4 +22,38 @@ body {
 #root {
   width: 100%;
   height: 100svh;
+}
+
+/*
+ * Kanały wizualne grafu (channels.ts): selekcja (obwódka + wygaszenie 0.35)
+ * i replay (glow + wygaszenie 0.12) współistnieją; `gb-replay-dim` deklarowany
+ * PO `gb-sel-dim`, żeby mocniejsze wygaszenie wygrywało kaskadą.
+ */
+.gb-card {
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  transition: opacity 120ms ease;
+}
+
+.gb-edge {
+  transition: opacity 120ms ease;
+}
+
+.gb-selected {
+  outline: 2.5px solid var(--gb-ink);
+  outline-offset: 2px;
+}
+
+.gb-replay-active {
+  box-shadow:
+    0 0 0 3px var(--gb-accent),
+    0 0 18px 5px var(--gb-accent-soft);
+}
+
+.gb-sel-dim {
+  opacity: var(--gb-sel-dim-opacity);
+}
+
+.gb-replay-dim {
+  opacity: var(--gb-replay-dim-opacity);
 }
