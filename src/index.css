@@ -6,6 +6,11 @@
   --gb-sel-dim-opacity: 0.35;
   --gb-replay-dim-opacity: 0.12;
 
+  /* Kanał MCP (highlight_nodes): wskazanie z rozmowy — teal, wolny od kolizji
+     z fioletem replayu (accent) i czerwienią awarii (D5). */
+  --gb-highlight: #0e9594;
+  --gb-highlight-soft: rgba(14, 149, 148, 0.5);
+
   /* Typy węzłów (taksonomia §5/§6): akcent karty + ikona. */
   --gb-type-session: #08060d;
   --gb-type-agent: #aa3bff;
@@ -79,6 +84,13 @@ body {
   box-shadow:
     0 0 0 3px var(--gb-accent),
     0 0 18px 5px var(--gb-accent-soft);
+}
+
+/* Wskazanie z rozmowy MCP — ten sam język wizualny co gb-replay-active. */
+.gb-mcp-highlight {
+  box-shadow:
+    0 0 0 3px var(--gb-highlight),
+    0 0 18px 5px var(--gb-highlight-soft);
 }
 
 .gb-sel-dim {

@@ -132,6 +132,30 @@ Skrypt jest fire-and-forget (`curl` z timeoutem 1s, zawsze `exit 0`) — nigdy
 nie blokuje ani nie przerywa wykonania Claude Code, nawet gdy serwer live nie
 działa.
 
+## Serwer MCP (analiza sesji z Claude Code)
+
+Serwer live wystawia endpoint `POST /mcp` (JSON-RPC 2.0, transport Streamable
+HTTP, zero SDK — `server/mcp.mjs`). Rejestracja w Claude Code:
+
+```
+claude mcp add --transport http glassbox http://127.0.0.1:4517/mcp
+```
+
+Cztery narzędzia:
+
+| Narzędzie | Działanie |
+|---|---|
+| `list_sessions` | lista ostatnich sesji (ścieżka, rozmiar, mtime, liczba węzłów) |
+| `get_session_graph` | rzut zwinięty grafu w kompaktowym TSV: kręgosłup main + jeden wiersz agregatu per subagent (calls/files/errors/cost/pat) — skaluje się z liczbą agentów, nie wywołań; `expand: [id]` rozwija poddrzewo; id sekwencyjne `n0…nN` stabilne względem pełnego grafu |
+| `get_node_detail` | pełny `detail`/`output`/`toolUseResult` + sąsiedztwo jednego węzła (~1200 tokenów) |
+| `highlight_nodes` | podświetla wskazane węzły w otwartym UI (broadcast SSE, obrys teal + adnotacja w nagłówku) |
+
+Endpoint jest wiązany z pętlą zwrotną (`127.0.0.1`, patrz `GLASSBOX_HOST`) —
+nie jest widoczny z sieci lokalnej. Parametr `session` przechodzi przez tę samą
+walidację `resolveSessionPath` co `/events` (odmowa path traversal). Adnotacje
+z analizy trafiają do `data/annotations/` (gitignore — dane prywatne), a lekcje
+uogólnione do korpusu `~/.claude/kb/lessons/` zapisuje asystent w Claude Code.
+
 ## Warstwa izolacji
 
 Każdy węzeł grafu niesie `sandbox: SandboxInfo` (`src/parser/sandbox.ts`) —

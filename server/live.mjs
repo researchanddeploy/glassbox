@@ -19,6 +19,7 @@ import { createLineSplitter } from "./lineSplitter.mjs";
 import { resolveSessionPath } from "./sessionPath.mjs";
 import { listSessions } from "./sessionsList.mjs";
 import { readSubagentSidecars } from "./subagents.mjs";
+import { createMcpHandler } from "./mcp.mjs";
 
 const PORT = 4517;
 // Domyślnie tylko pętla lokalna; kontener ustawia GLASSBOX_HOST=0.0.0.0 (port
@@ -134,6 +135,22 @@ setInterval(() => {
   }
 }, HEARTBEAT_MS);
 
+/**
+ * Broadcast zdarzenia `highlight` do klientów SSE sesji (narzędzie MCP
+ * highlight_nodes). Tracker powstaje na żądanie — bez otwartego UI broadcast
+ * trafia w pustkę, co jest poprawne (zwracamy liczbę klientów).
+ */
+function broadcastHighlight(absPath, payload) {
+  const tracker = getTracker(absPath);
+  const data = JSON.stringify(payload);
+  for (const res of tracker.clients) sse(res, "highlight", data);
+  return tracker.clients.size;
+}
+
+// Endpoint MCP tylko w trybie katalogu sesji (walidacja przez resolveSessionPath).
+const handleMcp = sessionsDir ? createMcpHandler({ sessionsDir, broadcastHighlight }) : null;
+const MCP_BODY_LIMIT = 1_000_000;
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -181,6 +198,52 @@ const server = createServer((req, res) => {
     // przyrost śledzonych plików zamiast czekać do najbliższego ticka pollingu (do 1s).
     for (const tracker of trackers.values()) tracker.checkForGrowth();
     res.writeHead(204).end();
+    return;
+  }
+
+  if (url.pathname === "/mcp") {
+    // JSON-RPC 2.0 (Streamable HTTP) — patrz server/mcp.mjs. Serwer wiąże się
+    // z 127.0.0.1 (HOST wyżej), więc endpoint nie jest widoczny z sieci (D8).
+    if (req.method === "OPTIONS") {
+      res
+        .writeHead(204, {
+          ...corsHeaders(req),
+          "Access-Control-Allow-Methods": "POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type, mcp-protocol-version, mcp-session-id",
+        })
+        .end();
+      return;
+    }
+    if (req.method !== "POST") {
+      res.writeHead(405, corsHeaders(req)).end("tylko POST");
+      return;
+    }
+    if (!handleMcp) {
+      res.writeHead(404, corsHeaders(req)).end("tryb pojedynczego pliku — /mcp niedostępne");
+      return;
+    }
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+      if (raw.length > MCP_BODY_LIMIT) req.destroy();
+    });
+    req.on("end", () => {
+      let body;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        res
+          .writeHead(400, { "Content-Type": "application/json", ...corsHeaders(req) })
+          .end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }));
+        return;
+      }
+      const out = handleMcp(body);
+      if (out === null) {
+        res.writeHead(202, corsHeaders(req)).end(); // notyfikacja — bez treści
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json", ...corsHeaders(req) }).end(JSON.stringify(out));
+    });
     return;
   }
 

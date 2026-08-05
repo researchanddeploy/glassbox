@@ -18,6 +18,8 @@ export interface ChannelState {
   replayDimmedIds: ReadonlySet<string>;
   /** Ostatni węzeł utworzony do pozycji scrubbera (glow) albo null. */
   activeId: string | null;
+  /** Kanał MCP: węzły wskazane przez highlight_nodes (zdarzenie SSE `highlight`). */
+  highlightedIds: ReadonlySet<string>;
 }
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
@@ -27,6 +29,7 @@ export const EMPTY_CHANNELS: ChannelState = {
   neighborIds: EMPTY_SET,
   replayDimmedIds: EMPTY_SET,
   activeId: null,
+  highlightedIds: EMPTY_SET,
 };
 
 /** Sąsiedzi 1-hop węzła `id` w obu kierunkach krawędzi (bez samego `id`). */
@@ -85,6 +88,7 @@ export function nodeChannelClasses(s: ChannelState, nodeId: string): string {
     else if (!s.neighborIds.has(nodeId)) cls += " gb-sel-dim";
   }
   if (nodeId === s.activeId) cls += " gb-replay-active";
+  if (s.highlightedIds.has(nodeId)) cls += " gb-mcp-highlight";
   if (s.replayDimmedIds.has(nodeId)) cls += " gb-replay-dim";
   return cls;
 }
