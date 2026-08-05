@@ -1,5 +1,7 @@
-export { parseSession } from "./parseSession";
-export { classifySandbox, NO_SANDBOX_INFO } from "./sandbox";
+// Rozszerzenia .ts w reeksportach: konsumpcja z serwera (node --experimental-strip-types
+// / natywny type stripping Node ≥ 22.6) wymaga pełnych ścieżek ESM; Vite je znosi.
+export { parseSession } from "./parseSession.ts";
+export { classifySandbox, NO_SANDBOX_INFO } from "./sandbox.ts";
 export type {
   EdgeType,
   FullDetail,
@@ -14,4 +16,4 @@ export type {
   BoundaryCrossing,
   IsolationType,
   SandboxInfo,
-} from "./types";
+} from "./types.ts";
