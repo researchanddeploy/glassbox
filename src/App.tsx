@@ -12,8 +12,19 @@ import "@xyflow/react/dist/style.css";
 import { parseSession } from "./parser";
 import type { GraphNode, SessionGraph, SessionMeta, SubagentSidecar } from "./parser/types";
 import { layoutProjected } from "./layout/elkLayout";
-import { MAIN_AGENT_ID, projectGraph } from "./layout/collapse";
-import { AgentGroupNode, AgentNode, FileNode, IsolationGroupNode, SessionNode, ToolCallNode } from "./nodes/nodeCards";
+import { MAIN_AGENT_ID, filterErrorsOnly, projectGraph } from "./layout/collapse";
+import { isErrorStatus } from "./parser/patterns";
+import {
+  AgentGroupNode,
+  AgentNode,
+  CheckpointNode,
+  FileNode,
+  IsolationGroupNode,
+  SessionNode,
+  TaskNode,
+  ToolCallNode,
+  TurnNode,
+} from "./nodes/nodeCards";
 import { ChannelEdge } from "./nodes/channelEdge";
 import { computeReplayChannel, neighborIdsOf, type ReplayItem } from "./channels";
 import { setChannels } from "./channelStore";
@@ -40,10 +51,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// D5: czerwień zarezerwowana dla awarii — sygnały sandboxa na bursztynie (--gb-warn).
 const LEGEND_ITEMS = [
-  { label: "unsandboxed", color: "#d9455f" },
-  { label: "network", color: "#4f7cff" },
-  { label: "container", color: "#aa3bff" },
+  { label: "unsandboxed", color: "var(--gb-warn)" },
+  { label: "network", color: "var(--gb-net)" },
+  { label: "container", color: "var(--gb-container)" },
 ];
 
 /** Legenda badge'y granicy sandboxa, w rogu kanwy. */
@@ -86,6 +98,9 @@ const nodeTypes = {
   agent: AgentNode,
   tool_call: ToolCallNode,
   file: FileNode,
+  turn: TurnNode,
+  task: TaskNode,
+  checkpoint: CheckpointNode,
   isolationGroup: IsolationGroupNode,
   agentGroup: AgentGroupNode,
 };
@@ -105,6 +120,10 @@ export default function App() {
   const [meta, setMeta] = useState<SessionMeta | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Filtr „tylko błędy" (taksonomia): rzut grafu redukowany do awarii + ścieżki
+  // agentów; licznik ukrytych węzłów liczony przy projekcji.
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [hiddenCount, setHiddenCount] = useState(0);
   // Sidecary subagentów bieżącej sesji (fetch z /subagents przy wyborze sesji).
   const sidecarsRef = useRef<SubagentSidecar[]>([]);
   // Instancja React Flow do fitView({ nodes }) po kliknięciu węzła.
@@ -185,11 +204,18 @@ export default function App() {
     });
   }, []);
 
-  // Rzut grafu + layout zagnieżdżony ELK po każdej zmianie grafu albo zwinięcia.
+  // Rzut grafu + layout zagnieżdżony ELK po każdej zmianie grafu, zwinięcia albo filtra.
   useEffect(() => {
     if (!graph) return;
     let cancelled = false;
-    const projected = projectGraph(graph.nodes, graph.edges, expanded);
+    let projected = projectGraph(graph.nodes, graph.edges, expanded);
+    if (errorsOnly) {
+      const filtered = filterErrorsOnly(projected);
+      projected = filtered.graph;
+      setHiddenCount(filtered.hiddenCount);
+    } else {
+      setHiddenCount(0);
+    }
     layoutProjected(projected).then(({ nodes, edges }) => {
       if (cancelled) return;
       setFlowNodes(
@@ -202,7 +228,15 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [graph, expanded, toggleAgent]);
+  }, [graph, expanded, errorsOnly, toggleAgent]);
+
+  // Liczba awarii (error_tool/error_api) w PEŁNYM grafie — etykieta przełącznika filtra.
+  const errorCount = useMemo(
+    () => graph?.nodes.filter((n) => isErrorStatus(n.meta.status)).length ?? 0,
+    [graph],
+  );
+
+  const toggleErrorsOnly = useCallback(() => setErrorsOnly((v) => !v), []);
 
   const stopLive = useCallback(() => {
     esRef.current?.close();
@@ -429,6 +463,24 @@ export default function App() {
               pomiń
             </button>
           </span>
+        )}
+        {graph && (
+          <button
+            onClick={toggleErrorsOnly}
+            title="Filtr taksonomii: pokaż wyłącznie awarie (error_tool/error_api) i ścieżkę agentów do nich"
+            style={{
+              cursor: "pointer",
+              fontSize: 12,
+              color: errorsOnly ? "#fff" : "var(--gb-status-error)",
+              background: errorsOnly ? "var(--gb-status-error)" : "transparent",
+              border: "1px solid var(--gb-status-error)",
+              borderRadius: 6,
+              padding: "3px 10px",
+              whiteSpace: "nowrap",
+            }}
+          >
+            tylko błędy ({errorCount}){errorsOnly ? ` · ukryto ${hiddenCount}` : ""}
+          </button>
         )}
         <button
           onClick={toggleLive}

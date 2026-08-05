@@ -135,15 +135,17 @@ describe("parseSession — przykład syntetyczny (public/sample.jsonl)", () => {
     const sessionNodes = graph.nodes.filter((n) => n.type === "session");
 
     expect(sessionNodes.length).toBe(1);
-    // main + 3 subagentów (Explore, general-purpose async, worktree)
-    expect(agentNodes.length).toBe(4);
+    // main + 4 subagentów (Explore, general-purpose async, worktree, analiza logów async)
+    expect(agentNodes.length).toBe(5);
     expect(toolCallNodes.length).toBeGreaterThan(0);
-    expect(fileNodes.length).toBe(5); // App.tsx, types.ts (Read), parseSession.ts (Edit), README.md (Write), sandbox.ts (Edit, w worktree)
+    // App.tsx, types.ts (Read), parseSession.ts (Edit), README.md (Write),
+    // sandbox.ts (Edit, w worktree), agent-apending001.md (Read outputFile)
+    expect(fileNodes.length).toBe(6);
 
     const spawnEdges = graph.edges.filter((e) => e.type === "spawns");
-    expect(spawnEdges.length).toBe(4); // session->main, main->sub1, main->sub2, main->sub3(worktree)
+    expect(spawnEdges.length).toBe(5); // session->main, main->sub1..sub3, main->sub4(async)
 
-    const errorTool = toolCallNodes.find((n) => n.meta.status === "error");
+    const errorTool = toolCallNodes.find((n) => n.meta.status === "error_tool");
     expect(errorTool).toBeDefined();
     expect(errorTool?.label).toBe("Bash");
 
@@ -187,16 +189,30 @@ describe("parseSession — przykład syntetyczny (public/sample.jsonl)", () => {
     expect(graph.nodes.length).toBeGreaterThan(0);
   });
 
-  it("rozpoznaje statusy in_progress, interrupted i denied", () => {
+  it("rozpoznaje statusy in_progress, abandoned, interrupted i denied", () => {
     const graph = parseSession(raw);
     const byId = new Map(graph.nodes.map((n) => [n.id, n]));
 
-    // Spawn asynchroniczny bez sidecara = praca w toku, nie "ok".
-    expect(byId.get("agent-toolu_u-0015")?.meta.status).toBe("in_progress");
+    // Spawn async bez sidecara, którego outputFile NIGDY nie odczytano → porzucone.
+    expect(byId.get("agent-toolu_u-0015")?.meta.status).toBe("abandoned");
+    // Spawn async bez sidecara, ale outputFile odczytany Readem → praca w toku.
+    expect(byId.get("agent-toolu_u-0054")?.meta.status).toBe("in_progress");
     // toolUseResult.interrupted → przerwane, mimo is_error: false.
     expect(byId.get("tool-toolu_u-0041")?.meta.status).toBe("interrupted");
     // toolDenialKind → odmowa, mimo is_error: true (odmowa to nie awaria).
     expect(byId.get("tool-toolu_u-0043")?.meta.status).toBe("denied");
+  });
+
+  it("rozbija błąd na error_tool i error_api oraz oznacza retried", () => {
+    const graph = parseSession(raw);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+
+    // Błędny lint z późniejszym identycznym bliźniakiem → ponowione, nie błąd.
+    expect(byId.get("tool-toolu_u-0050")?.meta.status).toBe("retried");
+    expect(byId.get("tool-toolu_u-0052")?.meta.status).toBe("ok");
+    // isApiErrorMessage w turze → tura 2 ze statusem error_api.
+    const turns = graph.nodes.filter((n) => n.type === "turn");
+    expect(turns.map((t) => t.meta.status)).toEqual(["ok", "error_api"]);
   });
 
   it("liczy usage raz per message.id (pułapka kumulacji cache)", () => {
@@ -223,8 +239,52 @@ describe("parseSession — przykład syntetyczny (public/sample.jsonl)", () => {
 
   it("zlicza rekordy system i attachment per subtype/typ", () => {
     const graph = parseSession(raw);
-    expect(graph.meta.systemSubtypeCounts).toEqual({ turn_duration: 1, compact_boundary: 1 });
-    expect(graph.meta.attachmentTypeCounts).toEqual({ hook_success: 2, diagnostics: 1 });
+    expect(graph.meta.systemSubtypeCounts).toEqual({ turn_duration: 2, compact_boundary: 1, stop_hook_summary: 1 });
+    expect(graph.meta.attachmentTypeCounts).toEqual({ hook_success: 2, diagnostics: 1, task_status: 2 });
+  });
+
+  it("emituje węzły taksonomii: tura, punkt kontrolny (kompakcja + snapshot), zadanie", () => {
+    const graph = parseSession(raw);
+    const turns = graph.nodes.filter((n) => n.type === "turn");
+    const checkpoints = graph.nodes.filter((n) => n.type === "checkpoint");
+    const tasks = graph.nodes.filter((n) => n.type === "task");
+
+    expect(turns.map((t) => t.label)).toEqual(["tura 1", "tura 2"]);
+    expect(turns[0].taxo?.pendingBackgroundAgents).toBe(1);
+    expect(turns[1].taxo?.pendingBackgroundAgents).toBe(6);
+    expect(turns[1].taxo?.gateBlocked).toBe(true); // stop_hook_summary.preventedContinuation
+
+    expect(checkpoints.map((c) => c.label)).toEqual(["kompakcja", "snapshot plików"]);
+    expect(checkpoints[0].taxo?.droppedTokens).toBe(138000);
+
+    // Dwa task_status tego samego taskId → JEDEN węzeł, ostatni stan wygrywa.
+    expect(tasks.length).toBe(1);
+    expect(tasks[0].label).toBe("Domknij taksonomię w UI");
+    expect(tasks[0].meta.status).toBe("ok"); // completed
+
+    // Węzły taksonomii wiszą na agencie krawędzią calls, ale NIE liczą się jako wywołania.
+    const taxoIds = new Set([...turns, ...checkpoints, ...tasks].map((n) => n.id));
+    for (const id of taxoIds) {
+      expect(graph.edges.some((e) => e.type === "calls" && e.target === id)).toBe(true);
+    }
+    expect(graph.meta.toolCallCount).toBe(graph.nodes.filter((n) => n.type === "tool_call").length);
+  });
+
+  it("przypisuje wzorce pewne: fanout, saturation_compaction, gate_block, escalation, interrupted, diagnostics_regression", () => {
+    const graph = parseSession(raw);
+    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+    const turns = graph.nodes.filter((n) => n.type === "turn");
+
+    expect(turns[0].patterns).toEqual([]); // 1 agent w tle < próg 3
+    expect(turns[1].patterns).toEqual(expect.arrayContaining(["fanout", "gate_block"]));
+    const compaction = graph.nodes.find((n) => n.label === "kompakcja");
+    expect(compaction?.patterns).toContain("saturation_compaction");
+    // dangerouslyDisableSandbox → eskalacja; odmowa → eskalacja; przerwanie → interrupted.
+    expect(byId.get("tool-toolu_u-0024")?.patterns).toContain("escalation");
+    expect(byId.get("tool-toolu_u-0043")?.patterns).toContain("escalation");
+    expect(byId.get("tool-toolu_u-0041")?.patterns).toContain("interrupted");
+    // Nowa diagnostyka po edycji → regresja na ostatnim Edit/Write w oknie 5 wywołań.
+    expect(byId.get("tool-toolu_u-0031")?.patterns).toContain("diagnostics_regression");
   });
 
   it("wystawia pełne szczegóły węzła w details, bez zmiany limitu na karcie", () => {
@@ -313,7 +373,7 @@ describe("parseSession — sklejanie sidecarów subagentów (syntetyczne)", () =
     expect(graph.edges.some((e) => e.type === "spawns" && e.source === "agent-main" && e.target === "agent-aorphan001")).toBe(true);
 
     // Nikt nie zginął i nic się nie zdublowało:
-    // 4 agentów z sample + zagnieżdżony spawn z sidecarA + 1 sierota.
-    expect(graph.nodes.filter((n) => n.type === "agent").length).toBe(6);
+    // 5 agentów z sample + zagnieżdżony spawn z sidecarA + 1 sierota.
+    expect(graph.nodes.filter((n) => n.type === "agent").length).toBe(7);
   });
 });

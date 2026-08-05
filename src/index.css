@@ -6,6 +6,37 @@
   --gb-sel-dim-opacity: 0.35;
   --gb-replay-dim-opacity: 0.12;
 
+  /* Typy węzłów (taksonomia §5/§6): akcent karty + ikona. */
+  --gb-type-session: #08060d;
+  --gb-type-agent: #aa3bff;
+  --gb-type-tool: #4f7cff;
+  --gb-type-file: #22a06b;
+  --gb-type-turn: #8d8798; /* szary neutralny ◷ */
+  --gb-type-task: #0e9594; /* zielononiebieski ☑ */
+  --gb-type-checkpoint: #d9a514; /* bursztynowy ⎋ */
+
+  /* Statusy (taksonomia §4) — decyzja D5: CZERWIEŃ wyłącznie dla realnych awarii
+     (error_tool/error_api); sandbox/izolacja i stany pośrednie → bursztyn/pomarańcz. */
+  --gb-status-ok: #22a06b;
+  --gb-status-error: #d9455f;
+  --gb-status-interrupted: #d9a514;
+  --gb-status-denied: #e07b39;
+  --gb-status-in-progress: #2f80ed;
+  --gb-status-retried: #b58a1f;
+  --gb-status-abandoned: #6b6375;
+  --gb-status-unknown: #9a97a3;
+
+  /* Sygnały bezpieczeństwa (badge sandbox) — po D5 bursztyn, nie czerwień. */
+  --gb-warn: #b8860b;
+  --gb-net: #4f7cff;
+  --gb-container: #aa3bff;
+
+  /* Badge wzorców: jeden neutralny styl — kategorię niesie tekst, nie kolor
+     (zasada: jeden kanał percepcyjny na jeden wymiar taksonomii). */
+  --gb-pattern-bg: #f1edf7;
+  --gb-pattern-fg: #5b4a77;
+  --gb-pattern-border: #c9bcdd;
+
   font: 14px/1.4 system-ui, "Segoe UI", Roboto, sans-serif;
   color: var(--gb-ink);
   background: #fff;

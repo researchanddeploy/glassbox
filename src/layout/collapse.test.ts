@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parseSession } from "../parser/parseSession.ts";
 import type { GraphEdge, GraphNode, SubagentSidecar } from "../parser/types.ts";
 import { NO_SANDBOX_INFO } from "../parser/sandbox.ts";
-import { MAIN_AGENT_ID, buildHierarchy, lodForZoom, projectGraph } from "./collapse.ts";
+import { MAIN_AGENT_ID, buildHierarchy, filterErrorsOnly, lodForZoom, projectGraph } from "./collapse.ts";
 import { layoutProjected } from "./elkLayout.ts";
 
 // --- Syntetyczny graf: session → main → (t1→fileA, sub1[→t2→fileA, sub2[→t3]]) ---
@@ -28,6 +28,7 @@ function node(id: string, type: GraphNode["type"], status: GraphNode["meta"]["st
       status,
     },
     sandbox: NO_SANDBOX_INFO,
+    patterns: [],
   };
 }
 
@@ -43,7 +44,7 @@ const NODES: GraphNode[] = [
   node("t1", "tool_call"),
   node("fileA", "file"),
   node("sub1", "agent", "ok", "claude-sonnet-5"),
-  node("t2", "tool_call", "error"),
+  node("t2", "tool_call", "error_tool"),
   node("sub2", "agent", "ok", "claude-haiku-4-5"),
   node("t3", "tool_call"),
 ];
@@ -194,6 +195,76 @@ describe("layoutProjected — layout zagnieżdżony ELK", () => {
   });
 });
 
+describe("projectGraph — węzły taksonomii i wzorce w agregatach", () => {
+  // main ma turę z fanoutem i checkpoint kompakcji; t2 (error) żyje w zwiniętym sub1.
+  const turn = node("turn1", "turn");
+  turn.taxo = { pendingBackgroundAgents: 6 };
+  turn.patterns = ["fanout"];
+  const chk = node("chk1", "checkpoint");
+  chk.taxo = { droppedTokens: 1000 };
+  chk.patterns = ["saturation_compaction"];
+  const taxoNodes = [...NODES, turn, chk];
+  const taxoEdges = [...EDGES, edge("calls", MAIN_AGENT_ID, "turn1"), edge("calls", MAIN_AGENT_ID, "chk1")];
+
+  it("turn/checkpoint nie liczą się jako wywołania, ale ich wzorce wchodzą do agregatów", () => {
+    const projected = projectGraph(taxoNodes, taxoEdges, new Set());
+    const main = projected.nodes.find((pn) => pn.node.id === MAIN_AGENT_ID)!;
+    expect(main.aggregates!.toolCalls).toBe(3); // t1+t2+t3 — turn/checkpoint NIE zawyżają
+    expect(main.aggregates!.patterns).toEqual({ fanout: 1, saturation_compaction: 1 });
+    expect(main.aggregates!.errors).toBe(1); // t2 (error_tool)
+  });
+
+  it("rozwinięty main pokazuje węzły taksonomii jako członków grupy", () => {
+    const projected = projectGraph(taxoNodes, taxoEdges, new Set([MAIN_AGENT_ID]));
+    const ids = projected.nodes.map((pn) => pn.node.id);
+    expect(ids).toContain("turn1");
+    expect(ids).toContain("chk1");
+    expect(projected.nodes.find((pn) => pn.node.id === "turn1")!.parentAgentId).toBe(MAIN_AGENT_ID);
+  });
+});
+
+describe("filterErrorsOnly — filtr „tylko błędy” na rzucie grafu", () => {
+  it("zostawia sesję, awarie i ścieżkę agentów; liczy ukryte", () => {
+    // sub1 rozwinięty: t2 (error_tool) widoczny wprost.
+    const projected = projectGraph(NODES, EDGES, new Set([MAIN_AGENT_ID, "sub1"]));
+    const { graph, hiddenCount } = filterErrorsOnly(projected);
+    const ids = graph.nodes.map((pn) => pn.node.id);
+
+    expect(ids).toContain("session");
+    expect(ids).toContain(MAIN_AGENT_ID); // błąd w poddrzewie → ścieżka przodków zostaje
+    expect(ids).toContain("sub1");
+    expect(ids).toContain("t2");
+    expect(ids).not.toContain("t1"); // ok — ukryty
+    expect(ids).not.toContain("fileA");
+    expect(ids).not.toContain("sub2"); // bez błędów w poddrzewie
+    expect(hiddenCount).toBe(projected.nodes.length - ids.length);
+    expect(hiddenCount).toBeGreaterThan(0);
+
+    // Krawędzie spójne po filtrze.
+    const visible = new Set(ids);
+    for (const e of graph.edges) {
+      expect(visible.has(e.source)).toBe(true);
+      expect(visible.has(e.target)).toBe(true);
+    }
+  });
+
+  it("zwinięty agent z błędami w poddrzewie zostaje widoczny z agregatami", () => {
+    const projected = projectGraph(NODES, EDGES, new Set([MAIN_AGENT_ID]));
+    const { graph } = filterErrorsOnly(projected);
+    const sub1 = graph.nodes.find((pn) => pn.node.id === "sub1");
+    expect(sub1).toBeDefined();
+    expect(sub1!.collapsed).toBe(true);
+    expect(sub1!.aggregates!.errors).toBe(1); // licznik z PEŁNEGO poddrzewa, nie z rzutu
+  });
+
+  it("graf bez błędów redukuje się do sesji", () => {
+    const cleanNodes = NODES.map((n) => (n.id === "t2" ? { ...n, meta: { ...n.meta, status: "ok" as const } } : n));
+    const projected = projectGraph(cleanNodes, EDGES, new Set([MAIN_AGENT_ID]));
+    const { graph } = filterErrorsOnly(projected);
+    expect(graph.nodes.map((pn) => pn.node.id)).toEqual(["session"]);
+  });
+});
+
 describe("lodForZoom — zoom zmienia LOD karty, nigdy zbiór węzłów", () => {
   it("progi far/mid/near", () => {
     expect(lodForZoom(0.1)).toBe("far");
@@ -259,5 +330,40 @@ describe("projectGraph — realny transkrypt", () => {
     expect(firstWithWork).toBeDefined();
     const expandedOne = projectGraph(graph.nodes, graph.edges, new Set([MAIN_AGENT_ID, firstWithWork!.node.id]));
     expect(expandedOne.nodes.length).toBeGreaterThan(projected.nodes.length);
+  });
+
+  maybeIt("filtr „tylko błędy” drastycznie redukuje graf i nie psuje liczników agregatów", () => {
+    const graph = parseSession(raw as string, readSidecars(REAL_TRANSCRIPT));
+    // Pełne rozwinięcie wszystkich agentów — worst case liczby węzłów.
+    const allAgents = new Set(graph.nodes.filter((n) => n.type === "agent").map((n) => n.id));
+    const projected = projectGraph(graph.nodes, graph.edges, allAgents);
+    const { graph: filtered, hiddenCount } = filterErrorsOnly(projected);
+
+    const patternCounts: Record<string, number> = {};
+    for (const n of graph.nodes) for (const p of n.patterns) patternCounts[p] = (patternCounts[p] ?? 0) + 1;
+    const statusCounts: Record<string, number> = {};
+    for (const n of graph.nodes) statusCounts[n.meta.status] = (statusCounts[n.meta.status] ?? 0) + 1;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[real] filtr błędów: ${projected.nodes.length} → ${filtered.nodes.length} węzłów ` +
+        `(${(projected.nodes.length / Math.max(filtered.nodes.length, 1)).toFixed(1)}×, ukryto ${hiddenCount}); ` +
+        `statusy=${JSON.stringify(statusCounts)}; wzorce=${JSON.stringify(patternCounts)}`,
+    );
+
+    expect(hiddenCount).toBe(projected.nodes.length - filtered.nodes.length);
+    // Rząd redukcji z taksonomii (§5: udział błędów 1,5-2,4% → ~50×) — asercja
+    // zgrubna: co najmniej 10× na dużej realnej sesji.
+    expect(projected.nodes.length / Math.max(filtered.nodes.length, 1)).toBeGreaterThan(10);
+
+    // Spójność krawędzi po filtrze.
+    const visible = new Set(filtered.nodes.map((pn) => pn.node.id));
+    for (const e of filtered.edges) {
+      expect(visible.has(e.source)).toBe(true);
+      expect(visible.has(e.target)).toBe(true);
+    }
+    // Agregaty widocznych zwiniętych agentów nadal liczą PEŁNE poddrzewo.
+    for (const pn of filtered.nodes) {
+      if (pn.collapsed && pn.aggregates) expect(pn.aggregates.errors).toBeGreaterThan(0);
+    }
   });
 });

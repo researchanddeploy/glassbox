@@ -112,10 +112,14 @@ export async function layoutProjected(projected: ProjectedGraph): Promise<{ node
   const projectedById = new Map(projected.nodes.map((pn) => [pn.node.id, pn]));
   const seqEdges: { id: string; sources: string[]; targets: string[] }[] = [];
 
+  // Łańcuch sekwencji obejmuje też węzły taksonomii (turn/task/checkpoint) —
+  // chronologia = narracja; granice tur układają się między wywołaniami.
+  const SEQ_TYPES = new Set(["tool_call", "turn", "task", "checkpoint"]);
+
   function elkNodeFor(pn: ProjectedNode): ElkNode {
     if (pn.node.type === "agent" && !pn.collapsed) {
       const members = byContainer.get(pn.node.id) ?? [];
-      const toolIds = members.filter((m) => m.node.type === "tool_call").map((m) => m.node.id);
+      const toolIds = members.filter((m) => SEQ_TYPES.has(m.node.type)).map((m) => m.node.id);
       for (let i = 1; i < toolIds.length; i += 1) {
         seqEdges.push({ id: `seq-${pn.node.id}-${i}`, sources: [toolIds[i - 1]], targets: [toolIds[i]] });
       }
@@ -184,14 +188,7 @@ export async function layoutProjected(projected: ProjectedGraph): Promise<{ node
       if (!pn) continue;
       flowNodes.push({
         id: child.id,
-        type:
-          pn.node.type === "session"
-            ? "session"
-            : pn.node.type === "agent"
-              ? "agent"
-              : pn.node.type === "tool_call"
-                ? "tool_call"
-                : "file",
+        type: pn.node.type, // typy grafu = typy komponentów (nodeTypes w App)
         position,
         data: { node: pn.node, collapsed: pn.collapsed, aggregates: pn.aggregates },
         draggable: false,

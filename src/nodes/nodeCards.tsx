@@ -1,8 +1,9 @@
 import { Handle, Position, useStore, type NodeProps, type ReactFlowState } from "@xyflow/react";
-import type { GraphNode } from "../parser/types";
+import type { GraphNode, PatternId } from "../parser/types";
 import { lodForZoom, type AgentAggregates } from "../layout/collapse";
 import { computeCost, formatUsd } from "../pricing";
 import { useNodeChannelClasses } from "../channelStore";
+import { NODE_TYPE_META, PATTERN_META, STATUS_META } from "../taxonomy";
 
 /** Dane węzła karty: graf + stan collapse z projekcji + callback toggle z App. */
 export interface CardData {
@@ -16,22 +17,13 @@ export interface CardData {
 // nigdy useViewport() w karcie (to re-render 60/s przy każdym ruchu kamery).
 const lodSelector = (s: ReactFlowState) => lodForZoom(s.transform[2]);
 
-// Czerwień wyłącznie dla awarii (decyzja D5); nowe statusy na palecie bursztyn/pomarańcz/niebieski.
-const STATUS_COLOR: Record<string, string> = {
-  ok: "#22a06b",
-  error: "#d9455f",
-  unknown: "#9a97a3",
-  in_progress: "#2f80ed",
-  interrupted: "#d9a514",
-  denied: "#e07b39",
-};
-
-// Kolory badge'y przekroczenia granicy: unsandboxed czerwonawy (ryzyko), network
-// niebieski (informacyjny), container/filesystem-out fioletowy (neutralny, ale widoczny).
+// Kolory badge'y przekroczenia granicy — decyzja D5: czerwień zarezerwowana dla
+// awarii, więc sygnały sandboxa (unsandboxed/fs-out) idą na bursztyn (--gb-warn);
+// network niebieski (informacyjny), container fioletowy (neutralny, ale widoczny).
 const BOUNDARY_BADGE: Record<string, { label: string; color: string }> = {
-  network: { label: "network", color: "#4f7cff" },
-  container: { label: "container", color: "#aa3bff" },
-  "filesystem-out": { label: "fs-out", color: "#d9455f" },
+  network: { label: "network", color: "var(--gb-net)" },
+  container: { label: "container", color: "var(--gb-container)" },
+  "filesystem-out": { label: "fs-out", color: "var(--gb-warn)" },
 };
 
 interface CardProps extends NodeProps {
@@ -80,13 +72,13 @@ function Card({ data, accent, icon }: CardProps) {
           {node.label}
         </span>
         <span
-          title={`status: ${node.meta.status}`}
+          title={`status: ${STATUS_META[node.meta.status].pl} (${node.meta.status})`}
           style={{
             marginLeft: "auto",
             width: lod === "far" ? 12 : 8,
             height: lod === "far" ? 12 : 8,
             borderRadius: "50%",
-            background: STATUS_COLOR[node.meta.status],
+            background: STATUS_META[node.meta.status].color,
             flexShrink: 0,
           }}
         />
@@ -125,6 +117,10 @@ function Card({ data, accent, icon }: CardProps) {
               {node.detail.split("\n")[0]}
             </div>
           )}
+          <PatternBadges
+            patterns={node.patterns}
+            aggregated={isCollapsedAgent ? aggregates?.patterns : undefined}
+          />
           <BoundaryBadges node={node} />
         </>
       )}
@@ -160,7 +156,9 @@ function AggregatesRow({ aggregates }: { aggregates: AgentAggregates }) {
     <div style={{ color: "#6b6375", marginTop: 2 }}>
       <div>
         {aggregates.toolCalls} wywołań · {aggregates.files} plików
-        {aggregates.errors > 0 && <span style={{ color: "#d9455f", fontWeight: 700 }}> · {aggregates.errors} błędów</span>}
+        {aggregates.errors > 0 && (
+          <span style={{ color: "var(--gb-status-error)", fontWeight: 700 }}> · {aggregates.errors} błędów</span>
+        )}
         {aggregates.agents > 0 && ` · ${aggregates.agents} agentów`}
       </div>
       <div>
@@ -171,10 +169,50 @@ function AggregatesRow({ aggregates }: { aggregates: AgentAggregates }) {
   );
 }
 
+/**
+ * Badge wzorców PEWNYCH (taksonomia §6): etykieta PL, tooltip z opisem.
+ * Węzeł zbiorczy (zwinięty agent) pokazuje wzorce całego poddrzewa z licznikami.
+ */
+function PatternBadges({
+  patterns,
+  aggregated,
+}: {
+  patterns: readonly PatternId[];
+  aggregated?: Partial<Record<PatternId, number>>;
+}) {
+  const items: { id: PatternId; count: number }[] = aggregated
+    ? (Object.entries(aggregated) as [PatternId, number][]).map(([id, count]) => ({ id, count }))
+    : patterns.map((id) => ({ id, count: 1 }));
+  if (items.length === 0) return null;
+  return (
+    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+      {items.map(({ id, count }) => (
+        <span
+          key={id}
+          title={`${PATTERN_META[id].badge}: ${PATTERN_META[id].desc}`}
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            color: "var(--gb-pattern-fg)",
+            background: "var(--gb-pattern-bg)",
+            border: "1px solid var(--gb-pattern-border)",
+            borderRadius: 4,
+            padding: "0 5px",
+            letterSpacing: 0.2,
+          }}
+        >
+          {PATTERN_META[id].badge}
+          {count > 1 ? ` ×${count}` : ""}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /** Badge'y przekroczenia granicy sandboxa: unsandboxed (własna izolacja) + boundaryCrossings. */
 function BoundaryBadges({ node }: { node: GraphNode }) {
   const badges: { label: string; color: string }[] = [];
-  if (node.sandbox.isolation === "unsandboxed") badges.push({ label: "unsandboxed", color: "#d9455f" });
+  if (node.sandbox.isolation === "unsandboxed") badges.push({ label: "unsandboxed", color: "var(--gb-warn)" });
   for (const crossing of node.sandbox.boundaryCrossings) {
     const badge = BOUNDARY_BADGE[crossing];
     if (badge) badges.push(badge);
@@ -298,18 +336,36 @@ export function AgentGroupNode({ data }: NodeProps) {
   );
 }
 
+// Akcent i ikona typu ze słownika taksonomii (taxonomy.ts) — kolory przez tokeny --gb-type-*.
+function TypeCard({ cardType, ...props }: NodeProps & { cardType: GraphNode["type"] }) {
+  const meta = NODE_TYPE_META[cardType];
+  return <Card {...props} accent={meta.accent} icon={meta.icon} />;
+}
+
 export function SessionNode(props: NodeProps) {
-  return <Card {...props} accent="#08060d" icon="◆" />;
+  return <TypeCard {...props} cardType="session" />;
 }
 
 export function AgentNode(props: NodeProps) {
-  return <Card {...props} accent="#aa3bff" icon="●" />;
+  return <TypeCard {...props} cardType="agent" />;
 }
 
 export function ToolCallNode(props: NodeProps) {
-  return <Card {...props} accent="#4f7cff" icon="▸" />;
+  return <TypeCard {...props} cardType="tool_call" />;
 }
 
 export function FileNode(props: NodeProps) {
-  return <Card {...props} accent="#22a06b" icon="▤" />;
+  return <TypeCard {...props} cardType="file" />;
+}
+
+export function TurnNode(props: NodeProps) {
+  return <TypeCard {...props} cardType="turn" />;
+}
+
+export function TaskNode(props: NodeProps) {
+  return <TypeCard {...props} cardType="task" />;
+}
+
+export function CheckpointNode(props: NodeProps) {
+  return <TypeCard {...props} cardType="checkpoint" />;
 }
