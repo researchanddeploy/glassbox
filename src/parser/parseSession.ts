@@ -9,6 +9,7 @@ import type {
   SubagentSidecar,
 } from "./types.ts";
 import { classifySandbox, NO_SANDBOX_INFO } from "./sandbox.ts";
+import { detectPatterns, detectRetried, type ToolCallSeqEntry } from "./patterns.ts";
 
 const DETAIL_LIMIT = 2000; // ~2 KB w znakach ASCII — limit KART, nie danych (pełnia w details)
 
@@ -80,6 +81,10 @@ interface ParsedLine {
   toolUseResult: unknown;
   /** `toolDenialKind` — obecne, gdy użytkownik odmówił wykonania narzędzia. */
   toolDenialKind: string | null;
+  /** `isApiErrorMessage` — awaria warstwy API/modelu zapisana jako wiadomość. */
+  isApiErrorMessage: boolean;
+  /** Cały sparsowany rekord — źródło pól rzadkich (turn_duration, compactMetadata, attachment…). */
+  raw: Record<string, unknown>;
   role: string | null;
   model: string | null;
   /** `message.id` — TA SAMA wiadomość bywa rozpisana na wiele linii JSONL. */
@@ -134,6 +139,8 @@ function parseLine(raw: string): ParsedLine | null {
     attachmentType: attachment ? asString(attachment.type) : null,
     toolUseResult: rec.toolUseResult ?? null,
     toolDenialKind: asString(rec.toolDenialKind),
+    isApiErrorMessage: asBool(rec.isApiErrorMessage),
+    raw: rec,
     role: message ? asString(message.role) : null,
     model: message ? asString(message.model) : null,
     messageId: message ? asString(message.id) : null,
@@ -223,7 +230,7 @@ function statusFromResult(result: ToolResultInfo | undefined): NodeStatus {
   if (!result) return "unknown";
   if (result.denied) return "denied";
   if (result.interrupted) return "interrupted";
-  if (result.isError) return "error";
+  if (result.isError) return "error_tool";
   // Spawn asynchroniczny: ack "async_launched" to nie koniec pracy — status domyka
   // dopiero dowiązany sidecar (patrz attachSidecars).
   if (result.isAsync) return "in_progress";
@@ -289,6 +296,12 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
   // Usage liczone raz per message.id (patrz komentarz nad parseSession).
   const seenUsageKeys = new Set<string>();
 
+  // Taksonomia (ojacie-5hn): węzły task per taskId, ścieżki odczytane Readem
+  // (detekcja `abandoned`) i sekwencja wywołań (detekcja `retried`).
+  const taskNodeByTaskId = new Map<string, string>();
+  const readPaths = new Set<string>();
+  const toolCallSeq: ToolCallSeqEntry[] = [];
+
   const sessionId = mainLines.find((l) => l.sessionId)?.sessionId ?? null;
   const sessionNodeId = "session";
   nodes.set(sessionNodeId, {
@@ -299,6 +312,7 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
     output: "",
     meta: makeMeta(mainLines[0]?.timestamp ?? null, null, "unknown"),
     sandbox: NO_SANDBOX_INFO,
+    patterns: [],
   });
 
   const mainAgentId = "agent-main";
@@ -310,6 +324,7 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
     output: "",
     meta: makeMeta(mainLines[0]?.timestamp ?? null, null, "ok"),
     sandbox: NO_SANDBOX_INFO,
+    patterns: [],
   });
   edges.push({ id: nextId("edge"), type: "spawns", source: sessionNodeId, target: mainAgentId });
 
@@ -347,6 +362,7 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
       output: "",
       meta: makeMeta(timestamp, null, "unknown"),
       sandbox: NO_SANDBOX_INFO,
+    patterns: [],
     });
     return id;
   }
@@ -379,15 +395,115 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
     let activeAgentId = rootAgentId;
     let pendingSpawn: { agentId: string; toolUseId: string } | null = null;
 
+    // Stan tury (taksonomia): `turn_duration` domyka turę i tworzy węzeł `turn`;
+    // do tego czasu zbieramy sygnały błędu API i blokady bramki (stop hook).
+    // ponytail: tura urwana bez turn_duration (koniec pliku) nie dostaje węzła.
+    let turnIndex = 0;
+    let apiErrorInTurn = false;
+    let gateBlockedInTurn = false;
+    // Okno ostatnich 5 wywołań — wiązanie `diagnostics.isNew` z edycją (§3.8).
+    const recentTools: { nodeId: string; name: string; path: string | null }[] = [];
+
+    function emitTaxoNode(
+      type: "turn" | "task" | "checkpoint",
+      id: string,
+      label: string,
+      detail: string,
+      line: ParsedLine,
+      status: NodeStatus,
+      taxo?: GraphNode["taxo"],
+    ): GraphNode {
+      const node: GraphNode = {
+        id,
+        type,
+        label,
+        detail,
+        output: "",
+        meta: makeMeta(line.timestamp, null, status),
+        sandbox: NO_SANDBOX_INFO,
+        patterns: [],
+        ...(taxo ? { taxo } : {}),
+      };
+      nodes.set(id, node);
+      addEdge("calls", activeAgentId, id);
+      return node;
+    }
+
     for (const line of lines) {
+      if (line.isApiErrorMessage) apiErrorInTurn = true;
+
       if (line.type === "system") {
         const key = line.subtype ?? "unknown";
         systemSubtypeCounts[key] = (systemSubtypeCounts[key] ?? 0) + 1;
+        if (line.subtype === "turn_duration") {
+          turnIndex += 1;
+          const durationMs = asNumber(line.raw.durationMs);
+          const pending = asNumber(line.raw.pendingBackgroundAgentCount);
+          const messageCount = asNumber(line.raw.messageCount);
+          const parts = [`${Math.round(durationMs / 1000)} s`, `${messageCount} wiadomości`];
+          if (pending > 0) parts.push(`${pending} w tle`);
+          emitTaxoNode("turn", nextId("turn"), `tura ${turnIndex}`, parts.join(" · "), line,
+            apiErrorInTurn ? "error_api" : "ok",
+            { durationMs, pendingBackgroundAgents: pending, ...(gateBlockedInTurn ? { gateBlocked: true } : {}) });
+          apiErrorInTurn = false;
+          gateBlockedInTurn = false;
+        } else if (line.subtype === "compact_boundary") {
+          const cm = asRecord(line.raw.compactMetadata);
+          const dropped = cm ? asNumber(cm.cumulativeDroppedTokens) : 0;
+          const detail = cm ? `pre ${asNumber(cm.preTokens)} → post ${asNumber(cm.postTokens)} · odrzucono ${dropped}` : "";
+          emitTaxoNode("checkpoint", nextId("chk"), "kompakcja", detail, line, "ok", { droppedTokens: dropped });
+        } else if (line.subtype === "stop_hook_summary") {
+          const hookErrors = line.raw.hookErrors;
+          if (asBool(line.raw.preventedContinuation) || (Array.isArray(hookErrors) && hookErrors.length > 0)) {
+            gateBlockedInTurn = true;
+          }
+        }
         continue;
       }
       if (line.type === "attachment") {
         const key = line.attachmentType ?? "unknown";
         attachmentTypeCounts[key] = (attachmentTypeCounts[key] ?? 0) + 1;
+        const att = asRecord(line.raw.attachment);
+        if (line.attachmentType === "diagnostics" && att && asBool(att.isNew)) {
+          // Regresja diagnostyczna: nowa diagnostyka LSP → ostatni Edit/Write
+          // w oknie 5 wywołań (preferencja: zgodność ścieżki z attachment.files).
+          const files = Array.isArray(att.files) ? att.files.filter((f): f is string => typeof f === "string") : [];
+          const edits = recentTools.filter((t) => t.name === "Edit" || t.name === "Write");
+          const target = edits.findLast((t) => t.path !== null && files.includes(t.path)) ?? edits.at(-1);
+          const targetNode = target ? nodes.get(target.nodeId) : undefined;
+          if (targetNode) targetNode.taxo = { ...targetNode.taxo, newDiagnostics: true };
+        } else if (line.attachmentType === "hook_cancelled") {
+          gateBlockedInTurn = true;
+        } else if (line.attachmentType === "task_status" && att) {
+          const taskId = asString(att.taskId);
+          if (taskId) {
+            const rawStatus = asString(att.status) ?? "";
+            const status: NodeStatus =
+              rawStatus === "completed" ? "ok"
+              : rawStatus === "failed" || rawStatus === "error" ? "error_tool"
+              : rawStatus === "cancelled" ? "interrupted"
+              : "in_progress";
+            const label = asString(att.description) ?? `zadanie ${taskId.slice(0, 8)}`;
+            const detail = [asString(att.taskType), rawStatus, asString(att.deltaSummary)].filter(Boolean).join(" · ");
+            const existingId = taskNodeByTaskId.get(taskId);
+            const existing = existingId ? nodes.get(existingId) : undefined;
+            if (existing) {
+              // Kolejny task_status tego samego zadania: ostatni stan wygrywa, bez nowego węzła.
+              existing.meta.status = status;
+              existing.detail = detail;
+              existing.label = label;
+            } else {
+              const id = `task-${taskId}`;
+              taskNodeByTaskId.set(taskId, id);
+              emitTaxoNode("task", id, label, detail, line, status);
+            }
+          }
+        }
+        continue;
+      }
+      if (line.type === "file-history-snapshot") {
+        // Drugie źródło checkpointów wg słownika (§2): snapshot historii plików.
+        emitTaxoNode("checkpoint", nextId("chk"), "snapshot plików", "", line, "ok");
         continue;
       }
 
@@ -427,6 +543,7 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
               output: result?.text ?? "",
               meta: makeMeta(line.timestamp, subagentType, status),
               sandbox: classifySandbox(name, input),
+            patterns: [],
             });
             details.set(subagentId, {
               input: prompt,
@@ -449,6 +566,7 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
             output: result?.text ?? "",
             meta: makeMeta(line.timestamp, agentNode?.meta.model ?? null, status),
             sandbox: classifySandbox(name, input),
+            patterns: [],
           });
           details.set(toolNodeId, {
             input: inputSummary,
@@ -456,6 +574,13 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
             toolUseResult: result?.toolUseResult ?? null,
           });
           addEdge("calls", activeAgentId, toolNodeId);
+
+          // Taksonomia: sekwencja wywołań (retried), okno diagnostyki, odczyty (abandoned).
+          toolCallSeq.push({ nodeId: toolNodeId, key: `${name} ${JSON.stringify(input)}`, isError: result?.isError ?? false });
+          const toolPath = asString(input.file_path);
+          recentTools.push({ nodeId: toolNodeId, name, path: toolPath });
+          if (recentTools.length > 5) recentTools.shift();
+          if (name === "Read" && toolPath) readPaths.add(toolPath);
 
           if (FILE_TOOL_NAMES.has(name)) {
             const path = asString(input.file_path);
@@ -470,7 +595,7 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
             // Subagent inline zakończony — wracamy do głównego wątku.
             const spawned = nodes.get(pendingSpawn.agentId);
             if (spawned && spawned.meta.status !== "in_progress") {
-              spawned.meta.status = asBool(block.raw.is_error) ? "error" : "ok";
+              spawned.meta.status = asBool(block.raw.is_error) ? "error_tool" : "ok";
             }
             pendingSpawn = null;
             activeAgentId = rootAgentId;
@@ -541,6 +666,7 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
       output: "",
       meta: makeMeta(sc.lines[0]?.timestamp ?? null, meta ? asString(meta.agentType) : null, "ok"),
       sandbox: NO_SANDBOX_INFO,
+    patterns: [],
     });
     addEdge("spawns", parentNodeId, nodeId);
     return nodeId;
@@ -584,7 +710,26 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
     pendingSidecars = [];
   }
 
+  // --- Statusy pochodne i wzorce (taksonomia, ojacie-5hn) ---------------------
+  // `retried`: błędne wywołanie z późniejszym identycznym bliźniakiem (§4).
+  for (const nodeId of detectRetried(toolCallSeq)) {
+    const node = nodes.get(nodeId);
+    if (node && node.meta.status === "error_tool") node.meta.status = "retried";
+  }
+  // `abandoned`: spawn async bez sidecara, którego outputFile nie został odczytany
+  // do końca sesji. ponytail: „odczyt" = Read po dokładnej ścieżce; w sesji live
+  // świeży spawn może chwilowo nosić `abandoned`, zanim ktoś odbierze wynik.
+  for (const node of nodes.values()) {
+    if (node.meta.status !== "in_progress") continue;
+    const tur = asRecord(details.get(node.id)?.toolUseResult ?? null);
+    const outputFile = tur ? asString(tur.outputFile) : null;
+    if (outputFile && !readPaths.has(outputFile)) node.meta.status = "abandoned";
+  }
   const nodeList = Array.from(nodes.values());
+  for (const [nodeId, patterns] of detectPatterns(nodeList)) {
+    const node = nodes.get(nodeId);
+    if (node) node.patterns = patterns;
+  }
   const timestamps = nodeList.map((n) => n.meta.timestamp).filter((t): t is string => t !== null).sort();
   const agentNodes = nodeList.filter((n) => n.type === "agent");
   const toolCallNodes = nodeList.filter((n) => n.type === "tool_call");

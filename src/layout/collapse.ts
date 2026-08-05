@@ -9,7 +9,8 @@
 //
 // Zoom NIGDY nie zmienia zbioru węzłów — od tego jest lodForZoom (LOD karty).
 
-import type { GraphEdge, GraphNode } from "../parser/types.ts";
+import type { GraphEdge, GraphNode, PatternId } from "../parser/types.ts";
+import { isErrorStatus } from "../parser/patterns.ts";
 import { aggregateSessionCost, type SessionCostSummary } from "../pricing.ts";
 
 export const MAIN_AGENT_ID = "agent-main";
@@ -18,12 +19,14 @@ export const MAIN_AGENT_ID = "agent-main";
 export interface AgentAggregates {
   /** Liczba tool calli w poddrzewie. */
   toolCalls: number;
-  /** Węzły (tool calle + agenci) ze statusem error w poddrzewie. */
+  /** Węzły ze statusem awarii (error_tool/error_api, decyzja D5) w poddrzewie. */
   errors: number;
   /** Unikalne pliki dotknięte w poddrzewie. */
   files: number;
   /** Liczba agentów-potomków (bez samego agenta). */
   agents: number;
+  /** Liczniki wzorców pewnych w poddrzewie — badge zbiorczy na zwiniętym agencie. */
+  patterns: Partial<Record<PatternId, number>>;
   /** Tokeny i koszt USD poddrzewa (agent + potomkowie), per model. */
   cost: SessionCostSummary;
 }
@@ -78,7 +81,12 @@ interface SubtreeAcc {
   errors: number;
   files: Set<string>;
   agents: number;
+  patterns: Partial<Record<PatternId, number>>;
   agentNodes: GraphNode[];
+}
+
+function addPatterns(acc: Partial<Record<PatternId, number>>, patterns: readonly PatternId[]) {
+  for (const p of patterns) acc[p] = (acc[p] ?? 0) + 1;
 }
 
 /**
@@ -99,16 +107,21 @@ export function projectGraph(
   function subtree(agentId: string): SubtreeAcc {
     const memo = subtreeMemo.get(agentId);
     if (memo) return memo;
-    const acc: SubtreeAcc = { toolCalls: 0, errors: 0, files: new Set(), agents: 0, agentNodes: [] };
+    const acc: SubtreeAcc = { toolCalls: 0, errors: 0, files: new Set(), agents: 0, patterns: {}, agentNodes: [] };
     subtreeMemo.set(agentId, acc); // przed rekursją — bezpiecznik na cykl w danych
     const self = byId.get(agentId);
     if (self) {
       acc.agentNodes.push(self);
-      if (self.meta.status === "error") acc.errors += 1;
+      if (isErrorStatus(self.meta.status)) acc.errors += 1;
+      addPatterns(acc.patterns, self.patterns);
     }
+    // agentTools zawiera też węzły taksonomii (turn/task/checkpoint) — liczą się
+    // do błędów i wzorców poddrzewa, ale NIE do licznika wywołań (spójność liczników).
     for (const toolId of h.agentTools.get(agentId) ?? []) {
-      acc.toolCalls += 1;
-      if (byId.get(toolId)?.meta.status === "error") acc.errors += 1;
+      const member = byId.get(toolId);
+      if (member?.type === "tool_call") acc.toolCalls += 1;
+      if (member && isErrorStatus(member.meta.status)) acc.errors += 1;
+      if (member) addPatterns(acc.patterns, member.patterns);
       for (const fileId of h.toolFiles.get(toolId) ?? []) acc.files.add(fileId);
     }
     for (const childId of h.childAgents.get(agentId) ?? []) {
@@ -117,6 +130,9 @@ export function projectGraph(
       acc.errors += child.errors;
       acc.agents += 1 + child.agents;
       for (const f of child.files) acc.files.add(f);
+      for (const [p, n] of Object.entries(child.patterns)) {
+        acc.patterns[p as PatternId] = (acc.patterns[p as PatternId] ?? 0) + (n ?? 0);
+      }
       acc.agentNodes.push(...child.agentNodes);
     }
     return acc;
@@ -129,6 +145,7 @@ export function projectGraph(
       errors: acc.errors,
       files: acc.files.size,
       agents: acc.agents,
+      patterns: acc.patterns,
       cost: aggregateSessionCost(acc.agentNodes),
     };
   }
@@ -178,6 +195,28 @@ export function projectGraph(
   }
 
   return { nodes: out, edges: edges.filter((e) => visible.has(e.source) && visible.has(e.target)) };
+}
+
+/**
+ * Filtr „tylko błędy" (taksonomia §5, ojacie-5hn) — działa NA RZUCIE grafu,
+ * więc agregaty zwiniętych agentów pozostają policzone z pełnego poddrzewa.
+ * Widoczne zostają: sesja, awarie (error_tool/error_api) oraz agenci niosący
+ * awarie w poddrzewie (errors propagują w górę, więc ścieżka przodków się klei).
+ * Zwraca też licznik ukrytych węzłów do wyświetlenia przy przełączniku.
+ */
+export function filterErrorsOnly(projected: ProjectedGraph): { graph: ProjectedGraph; hiddenCount: number } {
+  const kept = projected.nodes.filter((pn) => {
+    if (pn.node.type === "session") return true;
+    if (pn.node.type === "agent") {
+      return isErrorStatus(pn.node.meta.status) || (pn.aggregates?.errors ?? 0) > 0;
+    }
+    return isErrorStatus(pn.node.meta.status);
+  });
+  const visible = new Set(kept.map((pn) => pn.node.id));
+  return {
+    graph: { nodes: kept, edges: projected.edges.filter((e) => visible.has(e.source) && visible.has(e.target)) },
+    hiddenCount: projected.nodes.length - kept.length,
+  };
 }
 
 /** Poziom szczegółu karty sterowany zoomem — zoom zmienia LOD, nigdy zbiór węzłów. */

@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import type { GraphNode } from "./parser/types";
 import { computeCost, formatUsd } from "./pricing";
+import { NODE_TYPE_META, PATTERN_META, STATUS_META } from "./taxonomy";
 import { formatRelative } from "./time";
 
 interface DetailPanelProps {
@@ -10,12 +11,7 @@ interface DetailPanelProps {
   sessionStartedAt: string | null;
 }
 
-const TYPE_LABEL: Record<GraphNode["type"], string> = {
-  session: "Sesja",
-  agent: "Agent",
-  tool_call: "Wywołanie narzędzia",
-  file: "Plik",
-};
+// Etykiety typów ze słownika taksonomii (taxonomy.ts) — jedno źródło dla całego UI.
 
 export function DetailPanel({ node, onClose, sessionStartedAt }: DetailPanelProps) {
   if (!node) return null;
@@ -39,12 +35,18 @@ export function DetailPanel({ node, onClose, sessionStartedAt }: DetailPanelProp
         ✕
       </button>
       <div style={{ fontSize: 11, textTransform: "uppercase", color: "#aa3bff", fontWeight: 700 }}>
-        {TYPE_LABEL[node.type]}
+        {NODE_TYPE_META[node.type].icon} {NODE_TYPE_META[node.type].pl}
       </div>
       <h2 style={{ fontSize: 16, margin: "4px 0 12px", wordBreak: "break-word" }}>{node.label}</h2>
 
       <dl style={{ fontSize: 13, color: "#333" }}>
-        <Row label="Status" value={node.meta.status} />
+        <Row label="Status" value={`${STATUS_META[node.meta.status].pl} (${node.meta.status})`} />
+        {node.patterns.length > 0 && (
+          <Row
+            label="Wzorce"
+            value={node.patterns.map((p) => `${PATTERN_META[p].badge} — ${PATTERN_META[p].desc}`).join("; ")}
+          />
+        )}
         <Row label="Model" value={node.meta.model ?? "—"} />
         <Row label="Czas" value={node.meta.timestamp ?? "—"} />
         <Row label="Czas względny" value={formatRelative(sessionStartedAt, node.meta.timestamp)} />
