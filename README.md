@@ -47,3 +47,54 @@ do ręcznej aktualizacji) — agregacja per agent (main i każdy subagent osobno
 widoczna na kartach węzłów i jako suma w nagłówku; nieznany model daje `null`
 (pokazywane są wtedy same tokeny, a suma sesji oznaczona jest `+` jako
 częściowa).
+
+## Tryb live
+
+Graf da się oglądać na żywo, w trakcie trwania sesji Claude Code — bez czekania
+na jej koniec i bez ręcznego wczytywania pliku po każdej zmianie.
+
+### Uruchomienie
+
+```bash
+node server/live.mjs ~/.claude/projects/<projekt>/<sesja>.jsonl
+```
+
+Serwer (Node ≥18, zero zależności runtime — tylko `node:http`/`node:fs`) staje
+na stałym porcie `4517` i śledzi przyrost wskazanego pliku: `fs.watch` plus
+fallback pollingiem co 1s (na wypadek systemów plików, gdzie `fs.watch`
+milczy), czytając tylko nowe bajty od ostatniego offsetu — nigdy całego pliku
+od zera. Niedokończona ostatnia linia jest buforowana do najbliższego
+znaku nowej linii (`server/lineSplitter.mjs`, przetestowany w `vitest`).
+
+Endpoint `GET http://localhost:4517/events` to SSE: najpierw cały dotychczasowy
+backlog (jeden event `backlog` z tablicą linii), potem bieżące nowe linie
+(event `line` na każdą), plus heartbeat co 15s.
+
+W UI: przycisk **„Live”** obok „wczytaj .jsonl” łączy się z tym adresem
+(`EventSource`, auto-reconnect wbudowany w przeglądarkę), pokazuje status
+połączenia (zielona kropka „połączono” / „rozłączono”), akumuluje przychodzące
+linie i re-parsuje je (debounce 500 ms) — nowe węzły przeliczają layout `elk`
+tak samo jak przy zwykłym wczytaniu pliku. Scrubber w trybie live jest domyślnie
+przypięty do końca osi czasu („follow”); ręczne przesunięcie suwaka (albo
+strzałki/play) wyłącza follow do końca sesji live.
+
+### Opcjonalny forwarder hooków
+
+`hooks/glassbox-hook.sh` to skrypt, który możesz **ręcznie** podpiąć pod
+`PostToolUse` we własnym `~/.claude/settings.json` — Glassbox nigdy sam niczego
+tam nie zapisuje. Live mode działa bez niego (fs.watch + polling wystarczają);
+hook tylko skraca opóźnienie do ~0, każąc serwerowi sprawdzić przyrost
+natychmiast po każdym wywołaniu narzędzia zamiast czekać do najbliższego ticka
+pollingu:
+
+```json
+"hooks": {
+  "PostToolUse": [
+    { "hooks": [{ "type": "command", "command": "/pelna/sciezka/do/glassbox/hooks/glassbox-hook.sh" }] }
+  ]
+}
+```
+
+Skrypt jest fire-and-forget (`curl` z timeoutem 1s, zawsze `exit 0`) — nigdy
+nie blokuje ani nie przerywa wykonania Claude Code, nawet gdy serwer live nie
+działa.
