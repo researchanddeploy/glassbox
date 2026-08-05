@@ -1,5 +1,8 @@
 // Typy grafu wykonania sesji Claude Code — czysty model, bez zależności od UI.
 
+import type { SandboxInfo } from "./sandbox.ts";
+export type { IsolationType, BoundaryCrossing, SandboxInfo } from "./sandbox.ts";
+
 export type NodeStatus = "ok" | "error" | "unknown";
 
 export type GraphNodeType = "session" | "agent" | "tool_call" | "file";
@@ -22,6 +25,8 @@ export interface GraphNode {
   /** Skrócony output (tool_result), max ~2 KB. Puste, gdy nie dotyczy. */
   output: string;
   meta: NodeMeta;
+  /** Izolacja/sandbox i przekroczenia granicy — patrz parser/sandbox.ts. */
+  sandbox: SandboxInfo;
 }
 
 export type EdgeType = "spawns" | "calls" | "touches";
