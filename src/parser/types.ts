@@ -3,7 +3,16 @@
 import type { SandboxInfo } from "./sandbox.ts";
 export type { IsolationType, BoundaryCrossing, SandboxInfo } from "./sandbox.ts";
 
-export type NodeStatus = "ok" | "error" | "unknown";
+export type NodeStatus =
+  | "ok"
+  | "error"
+  | "unknown"
+  /** Spawn asynchroniczny bez domknięcia (brak sidecara) albo sesja live. */
+  | "in_progress"
+  /** Przerwane: `toolUseResult.interrupted === true`. */
+  | "interrupted"
+  /** Odmowa wykonania narzędzia: rekord wyniku niesie `toolDenialKind`. */
+  | "denied";
 
 export type GraphNodeType = "session" | "agent" | "tool_call" | "file";
 
@@ -11,6 +20,10 @@ export interface NodeMeta {
   timestamp: string | null;
   tokensIn: number;
   tokensOut: number;
+  /** Tokeny czytane z cache (`cache_read_input_tokens`), deduplikowane po message.id. */
+  cacheReadTokens: number;
+  /** Tokeny zapisu do cache (`cache_creation_input_tokens`), deduplikowane po message.id. */
+  cacheCreationTokens: number;
   model: string | null;
   status: NodeStatus;
 }
@@ -44,16 +57,44 @@ export interface SessionMeta {
   endedAt: string | null;
   totalTokensIn: number;
   totalTokensOut: number;
+  /** Suma tokenów cache read/creation po deduplikacji per message.id — patrz parseSession. */
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
   modelsUsed: string[];
   agentCount: number;
   toolCallCount: number;
   fileCount: number;
+  /** Liczba sidecarów `subagents/agent-<id>.jsonl` sklejonych z grafem. */
+  sidecarsAttached: number;
+  /** Liczniki rekordów `system` per `subtype` (turn_duration, compact_boundary, …). */
+  systemSubtypeCounts: Record<string, number>;
+  /** Liczniki rekordów `attachment` per `attachment.type` (hook_success, diagnostics, …). */
+  attachmentTypeCounts: Record<string, number>;
   /** Liczba linii JSONL pominiętych (nieparsowalnych lub nieznanych). */
   skippedLines: number;
+}
+
+/** Pełne szczegóły węzła — bez limitu DETAIL_LIMIT, trzymane obok grafu, nie w GraphNode. */
+export interface FullDetail {
+  /** Pełny input wywołania (JSON/komenda/prompt), nieucięty. */
+  input: string;
+  /** Pełny output tool_result, nieucięty. */
+  output: string;
+  /** Surowe pole `toolUseResult` rekordu wyniku (obiekt, string albo tablica; null gdy brak). */
+  toolUseResult: unknown;
+}
+
+/** Zawartość jednego sidecara subagenta: `subagents/agent-<id>.jsonl` + opcjonalny meta.json. */
+export interface SubagentSidecar {
+  jsonl: string;
+  /** Zawartość `agent-<id>.meta.json` (agentType, description, toolUseId, parentAgentId, name…). */
+  meta?: Record<string, unknown> | null;
 }
 
 export interface SessionGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
   meta: SessionMeta;
+  /** Pełne szczegóły per węzeł (tool_call i agent-spawn) — patrz FullDetail. */
+  details: Map<string, FullDetail>;
 }

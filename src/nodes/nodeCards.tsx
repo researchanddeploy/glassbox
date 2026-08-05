@@ -2,10 +2,14 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { GraphNode } from "../parser/types";
 import { computeCost, formatUsd } from "../pricing";
 
+// Czerwień wyłącznie dla awarii (decyzja D5); nowe statusy na palecie bursztyn/pomarańcz/niebieski.
 const STATUS_COLOR: Record<string, string> = {
   ok: "#22a06b",
   error: "#d9455f",
   unknown: "#9a97a3",
+  in_progress: "#2f80ed",
+  interrupted: "#d9a514",
+  denied: "#e07b39",
 };
 
 // Kolory badge'y przekroczenia granicy: unsandboxed czerwonawy (ryzyko), network
