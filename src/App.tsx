@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { parseSession } from "./parser";
-import type { GraphNode, SessionMeta } from "./parser/types";
-import { layoutGraph, wrapIsolatedGroups } from "./layout/elkLayout";
-import { AgentNode, FileNode, IsolationGroupNode, SessionNode, ToolCallNode } from "./nodes/nodeCards";
+import type { GraphNode, SessionGraph, SessionMeta, SubagentSidecar } from "./parser/types";
+import { layoutProjected } from "./layout/elkLayout";
+import { MAIN_AGENT_ID, projectGraph } from "./layout/collapse";
+import { AgentGroupNode, AgentNode, FileNode, IsolationGroupNode, SessionNode, ToolCallNode } from "./nodes/nodeCards";
 import { DetailPanel } from "./DetailPanel";
 import { Scrubber } from "./Scrubber";
 import { aggregateSessionCost, formatUsd } from "./pricing";
@@ -77,14 +78,21 @@ const nodeTypes = {
   tool_call: ToolCallNode,
   file: FileNode,
   isolationGroup: IsolationGroupNode,
+  agentGroup: AgentGroupNode,
 };
 
 export default function App() {
+  // Pełny graf sesji żyje poza React Flow; do <ReactFlow> trafia rzut
+  // (projectGraph) przeliczony przez ELK po każdej zmianie zwinięcia.
+  const [graph, setGraph] = useState<SessionGraph | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([MAIN_AGENT_ID]));
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Sidecary subagentów bieżącej sesji (fetch z /subagents przy wyborze sesji).
+  const sidecarsRef = useRef<SubagentSidecar[]>([]);
 
   // Replay: timeline liczona raz przy wczytaniu, layout policzony raz — scrubber
   // zmienia tylko widoczność (opacity), nigdy nie przelicza elk.
@@ -130,18 +138,20 @@ export default function App() {
 
   const loadJsonl = useCallback(async (text: string, opts?: { follow?: boolean; resetSelection?: boolean }) => {
     const follow = opts?.follow ?? true;
-    if (opts?.resetSelection ?? true) setSelected(null);
+    if (opts?.resetSelection ?? true) {
+      setSelected(null);
+      // Nowa sesja startuje z widokiem domyślnym: kręgosłup session → main →
+      // subagenci zwinięci; rozwinięcie to jawna akcja użytkownika.
+      setExpanded(new Set([MAIN_AGENT_ID]));
+    }
     setError(null);
     try {
-      const graph = parseSession(text);
-      const { nodes: flatNodes, edges } = await layoutGraph(graph.nodes, graph.edges);
-      const nodes = wrapIsolatedGroups(graph.nodes, graph.edges, flatNodes);
+      const parsed = parseSession(text, sidecarsRef.current);
       const ts = Array.from(
-        new Set(graph.nodes.map((n) => toEpoch(n.meta.timestamp)).filter((t): t is number => t !== null)),
+        new Set(parsed.nodes.map((n) => toEpoch(n.meta.timestamp)).filter((t): t is number => t !== null)),
       ).sort((a, b) => a - b);
-      setFlowNodes(nodes);
-      setFlowEdges(edges);
-      setMeta(graph.meta);
+      setGraph(parsed);
+      setMeta(parsed.meta);
       setTimestamps(ts);
       if (follow) setIndex(ts.length > 0 ? ts.length - 1 : 0); // domyślnie: pełny graf
       setPlaying(false);
@@ -149,6 +159,34 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  const toggleAgent = useCallback((agentId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      return next;
+    });
+  }, []);
+
+  // Rzut grafu + layout zagnieżdżony ELK po każdej zmianie grafu albo zwinięcia.
+  useEffect(() => {
+    if (!graph) return;
+    let cancelled = false;
+    const projected = projectGraph(graph.nodes, graph.edges, expanded);
+    layoutProjected(projected).then(({ nodes, edges }) => {
+      if (cancelled) return;
+      setFlowNodes(
+        nodes.map((n) =>
+          n.type === "agent" || n.type === "agentGroup" ? { ...n, data: { ...n.data, onToggle: toggleAgent } } : n,
+        ),
+      );
+      setFlowEdges(edges);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [graph, expanded, toggleAgent]);
 
   const stopLive = useCallback(() => {
     esRef.current?.close();
@@ -164,6 +202,21 @@ export default function App() {
       liveRawRef.current = "";
       followRef.current = true;
       if (session) setSelectedSession(session);
+      // Sidecary subagentów: jeden fetch przy starcie sesji; po nadejściu reparse,
+      // bo backlog SSE mógł już zbudować graf bez nich. ponytail: bez tail sidecarów.
+      sidecarsRef.current = [];
+      const subagentsUrl = session
+        ? `${serverAddr}/subagents?session=${encodeURIComponent(session)}`
+        : `${serverAddr}/subagents`;
+      fetch(subagentsUrl)
+        .then((r) => (r.ok ? (r.json() as Promise<SubagentSidecar[]>) : []))
+        .then((sidecars) => {
+          sidecarsRef.current = sidecars;
+          if (sidecars.length > 0 && liveRawRef.current.length > 0) {
+            loadJsonl(liveRawRef.current, { follow: followRef.current, resetSelection: false });
+          }
+        })
+        .catch(() => {}); // brak sidecarów ≠ awaria — graf główny działa bez nich
       const url = session ? `${serverAddr}/events?session=${encodeURIComponent(session)}` : `${serverAddr}/events`;
       const es = new EventSource(url);
       esRef.current = es;
@@ -225,7 +278,7 @@ export default function App() {
     let active: GraphNode | null = null;
     let activeEpoch = -Infinity;
     for (const n of flowNodes) {
-      if (n.type === "isolationGroup") continue; // obrys grupy nie ma własnego czasu — zawsze widoczny
+      if (n.type === "isolationGroup" || n.type === "agentGroup") continue; // obrys grupy nie ma własnego czasu — zawsze widoczny
       const gn = (n.data as { node: GraphNode }).node;
       const epoch = toEpoch(gn.meta.timestamp);
       if (epoch !== null && epoch > currentTime) {
@@ -235,15 +288,19 @@ export default function App() {
         active = gn;
       }
     }
-    const sNodes = flowNodes.map((n) => ({
-      ...n,
-      style: {
-        ...n.style,
-        opacity: dimmed.has(n.id) ? DIMMED_OPACITY : 1,
-        boxShadow: active?.id === n.id ? ACTIVE_GLOW : undefined,
-        borderRadius: 10,
-      },
-    }));
+    const sNodes = flowNodes.map((n) =>
+      n.type === "isolationGroup" || n.type === "agentGroup"
+        ? n // grupy nie uczestniczą w replayu — styl (width/height) zostaje nietknięty
+        : {
+            ...n,
+            style: {
+              ...n.style,
+              opacity: dimmed.has(n.id) ? DIMMED_OPACITY : 1,
+              boxShadow: active?.id === n.id ? ACTIVE_GLOW : undefined,
+              borderRadius: 10,
+            },
+          },
+    );
     const sEdges = flowEdges.map((e) => ({
       ...e,
       style: {
@@ -259,16 +316,16 @@ export default function App() {
     if (playing && activeNode) setSelected(activeNode);
   }, [playing, activeNode]);
 
-  const costSummary = useMemo(() => {
-    const agents = flowNodes
-      .filter((n) => n.type === "agent")
-      .map((n) => (n.data as { node: GraphNode }).node);
-    return aggregateSessionCost(agents);
-  }, [flowNodes]);
+  // Koszt liczony z PEŁNEGO grafu, nie z rzutu — zwinięci agenci nie znikają z sumy.
+  const costSummary = useMemo(
+    () => aggregateSessionCost(graph?.nodes.filter((n) => n.type === "agent") ?? []),
+    [graph],
+  );
 
   const onFileInput = useCallback(
     (file: File) => {
-      file.text().then(loadJsonl);
+      sidecarsRef.current = []; // plik z dysku nie niesie sidecarów — tylko graf główny
+      file.text().then((text) => loadJsonl(text));
     },
     [loadJsonl],
   );
@@ -415,10 +472,11 @@ export default function App() {
             edges={styledEdges}
             nodeTypes={nodeTypes}
             onNodeClick={(_, n) => {
-              if (n.type === "isolationGroup") return; // obrys grupy nie ma panelu szczegółów
+              if (n.type === "isolationGroup" || n.type === "agentGroup") return; // obrys grupy nie ma panelu szczegółów
               setSelected((n.data as { node: GraphNode }).node);
             }}
             fitView
+            minZoom={0.05} // pułapka: domyślny minZoom 0.5 nie pozwala fitView zmieścić dużego grafu
           >
             <Background />
             <Controls />
