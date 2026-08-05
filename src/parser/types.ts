@@ -24,6 +24,13 @@ export interface NodeMeta {
   cacheReadTokens: number;
   /** Tokeny zapisu do cache (`cache_creation_input_tokens`), deduplikowane po message.id. */
   cacheCreationTokens: number;
+  /**
+   * Zapis do cache w podziale na TTL (`usage.cache_creation.ephemeral_*_input_tokens`).
+   * Gdy rekord nie niesie podziału, całość trafia do 5m (domyślny TTL) — zawsze
+   * cacheCreation5mTokens + cacheCreation1hTokens === cacheCreationTokens.
+   */
+  cacheCreation5mTokens: number;
+  cacheCreation1hTokens: number;
   model: string | null;
   status: NodeStatus;
 }

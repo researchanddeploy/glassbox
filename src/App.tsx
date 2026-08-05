@@ -382,8 +382,10 @@ export default function App() {
         {meta && (
           <span style={{ fontSize: 12, color: "#6b6375" }}>
             agentów: {meta.agentCount} · narzędzi: {meta.toolCallCount} · plików: {meta.fileCount} · tokeny:{" "}
-            {meta.totalTokensIn}/{meta.totalTokensOut} · koszt: {formatUsd(costSummary.cost)}
-            {costSummary.partial ? "+" : ""} · pominięto linii: {meta.skippedLines}
+            {meta.totalTokensIn}/{meta.totalTokensOut} · koszt: {formatUsd(costSummary.cost.total)}
+            {costSummary.partial ? "+" : ""} (we {formatUsd(costSummary.cost.input)} · wy{" "}
+            {formatUsd(costSummary.cost.output)} · cache {formatUsd(costSummary.cost.cacheRead + costSummary.cost.cacheWrite)}
+            ) · pominięto linii: {meta.skippedLines}
           </span>
         )}
         {error && <span style={{ fontSize: 12, color: "#d9455f" }}>{error}</span>}
