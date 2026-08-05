@@ -50,13 +50,13 @@ describe("parseSession — przykład syntetyczny (public/sample.jsonl)", () => {
     const sessionNodes = graph.nodes.filter((n) => n.type === "session");
 
     expect(sessionNodes.length).toBe(1);
-    // main + 2 subagentów
-    expect(agentNodes.length).toBe(3);
+    // main + 3 subagentów (Explore, general-purpose async, worktree)
+    expect(agentNodes.length).toBe(4);
     expect(toolCallNodes.length).toBeGreaterThan(0);
-    expect(fileNodes.length).toBe(4); // App.tsx, types.ts (Read), parseSession.ts (Edit), README.md (Write)
+    expect(fileNodes.length).toBe(5); // App.tsx, types.ts (Read), parseSession.ts (Edit), README.md (Write), sandbox.ts (Edit, w worktree)
 
     const spawnEdges = graph.edges.filter((e) => e.type === "spawns");
-    expect(spawnEdges.length).toBe(3); // session->main, main->sub1, main->sub2
+    expect(spawnEdges.length).toBe(4); // session->main, main->sub1, main->sub2, main->sub3(worktree)
 
     const errorTool = toolCallNodes.find((n) => n.meta.status === "error");
     expect(errorTool).toBeDefined();
@@ -72,6 +72,29 @@ describe("parseSession — przykład syntetyczny (public/sample.jsonl)", () => {
     expect(graph.meta.totalTokensIn).toBeGreaterThan(0);
     expect(graph.meta.totalTokensOut).toBeGreaterThan(0);
     expect(graph.meta.skippedLines).toBeGreaterThan(0); // linia "not valid json {{{"
+  });
+
+  it("klasyfikuje izolację/sandbox: worktree-subagent, unsandboxed Bash, network WebFetch", () => {
+    const graph = parseSession(raw);
+
+    const worktreeAgent = graph.nodes.find((n) => n.type === "agent" && n.sandbox.isolation === "worktree");
+    expect(worktreeAgent).toBeDefined();
+    expect(worktreeAgent?.label).toBe("Refaktor w izolowanym worktree");
+
+    const unsandboxedBash = graph.nodes.find(
+      (n) => n.type === "tool_call" && n.label === "Bash" && n.sandbox.isolation === "unsandboxed",
+    );
+    expect(unsandboxedBash).toBeDefined();
+    expect(unsandboxedBash?.sandbox.boundaryCrossings).toContain("filesystem-out");
+
+    const networkFetch = graph.nodes.find((n) => n.type === "tool_call" && n.label === "WebFetch");
+    expect(networkFetch?.sandbox.boundaryCrossings).toContain("network");
+
+    // Tool calle wewnątrz worktree-subagenta (Edit/Bash) są od niego osiągalne przez calls.
+    const worktreeToolIds = graph.edges
+      .filter((e) => e.type === "calls" && e.source === worktreeAgent?.id)
+      .map((e) => e.target);
+    expect(worktreeToolIds.length).toBeGreaterThan(0);
   });
 
   it("jest odporny na puste/nieznane linie", () => {
