@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { parseSession } from "./parseSession.ts";
 
 // Realny transkrypt z dysku — czytany bezpośrednio w teście, NIGDY kopiowany do repo
-// (dane prywatne). Jeśli plik nie istnieje na tej maszynie, test jest pomijany.
-const REAL_TRANSCRIPT = "/Users/ojacie/.claude/projects/-/81e20c5a-4ba7-4b04-a5f3-c73a7dcfe0cd.jsonl";
+// (dane prywatne). Ścieżkę podaje env GLASSBOX_REAL_TRANSCRIPT; bez niej test jest pomijany.
+const REAL_TRANSCRIPT = process.env.GLASSBOX_REAL_TRANSCRIPT ?? "";
 
 function readTranscript(path: string): string | null {
   try {

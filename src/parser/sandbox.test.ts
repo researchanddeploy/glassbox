@@ -3,11 +3,10 @@ import { describe, expect, it } from "vitest";
 import { classifySandbox } from "./sandbox.ts";
 import { parseSession } from "./parseSession.ts";
 
-// Bieżąca sesja Claude Code (ta, w której powstał ten kod) — czytana bezpośrednio
-// z dysku w teście, NIGDY kopiowana do repo (dane prywatne). Test pomijany, gdy
-// plik nie istnieje na tej maszynie.
-const CURRENT_SESSION =
-  "/Users/ojacie/.claude/projects/-Users-ojacie/f1743a87-fe81-494b-bed7-68fc4be4468b.jsonl";
+// Realny transkrypt Claude Code — czytany bezpośrednio z dysku w teście, NIGDY
+// kopiowany do repo (dane prywatne). Ścieżkę podaje env GLASSBOX_REAL_TRANSCRIPT;
+// bez niej test jest pomijany.
+const CURRENT_SESSION = process.env.GLASSBOX_REAL_TRANSCRIPT ?? "";
 
 function readTranscript(path: string): string | null {
   try {
