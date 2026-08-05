@@ -12,8 +12,23 @@ import { toEpoch } from "./time";
 
 const DIMMED_OPACITY = 0.12;
 const ACTIVE_GLOW = "0 0 0 3px #aa3bff, 0 0 18px 5px rgba(170,59,255,0.55)";
-const LIVE_URL = "http://localhost:4517/events";
+const DEFAULT_SERVER_ADDR = "http://localhost:4517";
+const SERVER_ADDR_KEY = "glassbox.serverAddr";
+const LAST_SESSION_KEY = "glassbox.lastSession";
 const LIVE_DEBOUNCE_MS = 500;
+
+interface SessionEntry {
+  path: string;
+  size: number;
+  mtime: number;
+}
+
+/** Rozmiar pliku w jednostce czytelnej dla człowieka (B/KB/MB). */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const LEGEND_ITEMS = [
   { label: "unsandboxed", color: "#d9455f" },
@@ -84,6 +99,35 @@ export default function App() {
   const esRef = useRef<EventSource | null>(null);
   const debounceRef = useRef<number | null>(null);
 
+  // Katalog sesji: adres serwera + wybrana sesja trzymane w localStorage między wizytami.
+  const [serverAddr, setServerAddr] = useState(() => localStorage.getItem(SERVER_ADDR_KEY) ?? DEFAULT_SERVER_ADDR);
+  const [sessions, setSessions] = useState<SessionEntry[]>([]);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  const [resumeOffer, setResumeOffer] = useState<string | null>(() => localStorage.getItem(LAST_SESSION_KEY));
+
+  useEffect(() => {
+    localStorage.setItem(SERVER_ADDR_KEY, serverAddr);
+  }, [serverAddr]);
+
+  useEffect(() => {
+    if (selectedSession) localStorage.setItem(LAST_SESSION_KEY, selectedSession);
+  }, [selectedSession]);
+
+  const fetchSessions = useCallback(async () => {
+    setSessionsError(null);
+    try {
+      const res = await fetch(`${serverAddr}/sessions`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error((body as { error?: string } | null)?.error ?? `HTTP ${res.status}`);
+      }
+      setSessions((await res.json()) as SessionEntry[]);
+    } catch (e) {
+      setSessionsError(e instanceof Error ? e.message : String(e));
+    }
+  }, [serverAddr]);
+
   const loadJsonl = useCallback(async (text: string, opts?: { follow?: boolean; resetSelection?: boolean }) => {
     const follow = opts?.follow ?? true;
     if (opts?.resetSelection ?? true) setSelected(null);
@@ -112,36 +156,54 @@ export default function App() {
     setLiveStatus("off");
   }, []);
 
-  const startLive = useCallback(() => {
-    stopLive();
-    setSelected(null);
-    liveRawRef.current = "";
-    followRef.current = true;
-    const es = new EventSource(LIVE_URL);
-    esRef.current = es;
-    const scheduleUpdate = () => {
-      if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
-      debounceRef.current = window.setTimeout(() => {
-        loadJsonl(liveRawRef.current, { follow: followRef.current, resetSelection: false });
-      }, LIVE_DEBOUNCE_MS);
-    };
-    es.addEventListener("open", () => setLiveStatus("connected"));
-    es.addEventListener("error", () => setLiveStatus("disconnected")); // EventSource sam ponawia próbę
-    es.addEventListener("backlog", (ev) => {
-      const lines = JSON.parse((ev as MessageEvent).data) as string[];
-      if (lines.length > 0) liveRawRef.current += lines.join("\n") + "\n";
-      scheduleUpdate();
-    });
-    es.addEventListener("line", (ev) => {
-      liveRawRef.current += (ev as MessageEvent).data + "\n";
-      scheduleUpdate();
-    });
-  }, [loadJsonl, stopLive]);
+  const startLive = useCallback(
+    (sessionOverride?: string) => {
+      const session = sessionOverride ?? selectedSession ?? undefined;
+      stopLive();
+      setSelected(null);
+      liveRawRef.current = "";
+      followRef.current = true;
+      if (session) setSelectedSession(session);
+      const url = session ? `${serverAddr}/events?session=${encodeURIComponent(session)}` : `${serverAddr}/events`;
+      const es = new EventSource(url);
+      esRef.current = es;
+      const scheduleUpdate = () => {
+        if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
+        debounceRef.current = window.setTimeout(() => {
+          loadJsonl(liveRawRef.current, { follow: followRef.current, resetSelection: false });
+        }, LIVE_DEBOUNCE_MS);
+      };
+      es.addEventListener("open", () => setLiveStatus("connected"));
+      es.addEventListener("error", () => setLiveStatus("disconnected")); // EventSource sam ponawia próbę
+      es.addEventListener("backlog", (ev) => {
+        const lines = JSON.parse((ev as MessageEvent).data) as string[];
+        if (lines.length > 0) liveRawRef.current += lines.join("\n") + "\n";
+        scheduleUpdate();
+      });
+      es.addEventListener("line", (ev) => {
+        liveRawRef.current += (ev as MessageEvent).data + "\n";
+        scheduleUpdate();
+      });
+    },
+    [loadJsonl, serverAddr, selectedSession, stopLive],
+  );
 
   const toggleLive = useCallback(() => {
     if (esRef.current) stopLive();
     else startLive();
   }, [startLive, stopLive]);
+
+  const selectSession = useCallback(
+    (path: string) => {
+      if (path) startLive(path);
+    },
+    [startLive],
+  );
+
+  const resumeLastSession = useCallback(() => {
+    if (resumeOffer) startLive(resumeOffer);
+    setResumeOffer(null);
+  }, [resumeOffer, startLive]);
 
   useEffect(() => () => stopLive(), [stopLive]);
 
@@ -244,6 +306,51 @@ export default function App() {
             }}
           />
         </label>
+        <input
+          type="text"
+          value={serverAddr}
+          onChange={(e) => setServerAddr(e.target.value)}
+          title="adres serwera live"
+          style={{
+            width: 170,
+            fontSize: 12,
+            padding: "3px 6px",
+            border: "1px solid #e5e4e7",
+            borderRadius: 6,
+            color: "#6b6375",
+          }}
+        />
+        <select
+          value={selectedSession ?? ""}
+          onFocus={fetchSessions}
+          onChange={(e) => selectSession(e.target.value)}
+          style={{ fontSize: 12, padding: "3px 6px", border: "1px solid #e5e4e7", borderRadius: 6, maxWidth: 260 }}
+        >
+          <option value="">wybierz sesję…</option>
+          {sessions.map((s) => (
+            <option key={s.path} value={s.path}>
+              {s.path} — {formatBytes(s.size)} — {new Date(s.mtime).toLocaleString()}
+            </option>
+          ))}
+        </select>
+        {sessionsError && <span style={{ fontSize: 12, color: "#d9455f" }}>{sessionsError}</span>}
+        {resumeOffer && (
+          <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#6b6375" }}>
+            wznowić ostatnią sesję?
+            <button
+              onClick={resumeLastSession}
+              style={{ cursor: "pointer", fontSize: 12, color: "#aa3bff", border: "none", background: "none" }}
+            >
+              wznów
+            </button>
+            <button
+              onClick={() => setResumeOffer(null)}
+              style={{ cursor: "pointer", fontSize: 12, color: "#6b6375", border: "none", background: "none" }}
+            >
+              pomiń
+            </button>
+          </span>
+        )}
         <button
           onClick={toggleLive}
           style={{
