@@ -88,6 +88,9 @@ interface ParsedLine {
   tokensOut: number;
   cacheRead: number;
   cacheCreation: number;
+  /** Podział zapisu cache po TTL; bez podziału w danych całość liczona jako 5m. */
+  cacheCreation5m: number;
+  cacheCreation1h: number;
   content: ContentBlock[];
 }
 
@@ -112,6 +115,14 @@ function parseLine(raw: string): ParsedLine | null {
         .map((block) => ({ type: asString(block.type) ?? "unknown", raw: block }))
     : [];
 
+  const cacheCreation = usage ? asNumber(usage.cache_creation_input_tokens) : 0;
+  // Warianty TTL: usage.cache_creation.{ephemeral_5m,ephemeral_1h}_input_tokens.
+  const cacheCreationSplit = usage ? asRecord(usage.cache_creation) : null;
+  const cacheCreation1h = cacheCreationSplit ? asNumber(cacheCreationSplit.ephemeral_1h_input_tokens) : 0;
+  const cacheCreation5m = cacheCreationSplit
+    ? asNumber(cacheCreationSplit.ephemeral_5m_input_tokens)
+    : cacheCreation; // brak podziału → domyślny TTL 5m
+
   return {
     type: asString(rec.type),
     uuid: asString(rec.uuid),
@@ -129,7 +140,9 @@ function parseLine(raw: string): ParsedLine | null {
     tokensIn: usage ? asNumber(usage.input_tokens) : 0,
     tokensOut: usage ? asNumber(usage.output_tokens) : 0,
     cacheRead: usage ? asNumber(usage.cache_read_input_tokens) : 0,
-    cacheCreation: usage ? asNumber(usage.cache_creation_input_tokens) : 0,
+    cacheCreation,
+    cacheCreation5m,
+    cacheCreation1h,
     content,
   };
 }
@@ -193,7 +206,17 @@ function nextId(prefix: string): string {
 }
 
 function makeMeta(timestamp: string | null, model: string | null, status: NodeStatus) {
-  return { timestamp, tokensIn: 0, tokensOut: 0, cacheReadTokens: 0, cacheCreationTokens: 0, model, status };
+  return {
+    timestamp,
+    tokensIn: 0,
+    tokensOut: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    cacheCreation5mTokens: 0,
+    cacheCreation1hTokens: 0,
+    model,
+    status,
+  };
 }
 
 function statusFromResult(result: ToolResultInfo | undefined): NodeStatus {
@@ -304,6 +327,8 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
     node.meta.tokensOut += line.tokensOut;
     node.meta.cacheReadTokens += line.cacheRead;
     node.meta.cacheCreationTokens += line.cacheCreation;
+    node.meta.cacheCreation5mTokens += line.cacheCreation5m;
+    node.meta.cacheCreation1hTokens += line.cacheCreation1h;
     if (line.model) node.meta.model = line.model;
     if (line.timestamp && !node.meta.timestamp) node.meta.timestamp = line.timestamp;
   }

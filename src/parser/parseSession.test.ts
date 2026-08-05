@@ -205,6 +205,20 @@ describe("parseSession — przykład syntetyczny (public/sample.jsonl)", () => {
     // cache_read=1000 i cache_creation=200 mają wejść do sumy dokładnie raz.
     expect(graph.meta.totalCacheReadTokens).toBe(1000);
     expect(graph.meta.totalCacheCreationTokens).toBe(200);
+    // Podział zapisu cache po TTL (usage.cache_creation) też liczony raz per message.id.
+    const main = graph.nodes.find((n) => n.id === "agent-main");
+    expect(main?.meta.cacheCreation5mTokens).toBe(50);
+    expect(main?.meta.cacheCreation1hTokens).toBe(150);
+  });
+
+  it("bez podziału TTL traktuje cały zapis cache jako 5m (domyślny TTL)", () => {
+    const line =
+      '{"type":"assistant","uuid":"ttl-1","timestamp":"2026-08-05T09:00:00.000Z","message":{"id":"msg_ttl","model":"claude-opus-4-8","role":"assistant","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":77}}}';
+    const graph = parseSession(line);
+    const main = graph.nodes.find((n) => n.id === "agent-main");
+    expect(main?.meta.cacheCreationTokens).toBe(77);
+    expect(main?.meta.cacheCreation5mTokens).toBe(77);
+    expect(main?.meta.cacheCreation1hTokens).toBe(0);
   });
 
   it("zlicza rekordy system i attachment per subtype/typ", () => {

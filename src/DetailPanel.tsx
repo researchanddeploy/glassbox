@@ -19,7 +19,7 @@ const TYPE_LABEL: Record<GraphNode["type"], string> = {
 
 export function DetailPanel({ node, onClose, sessionStartedAt }: DetailPanelProps) {
   if (!node) return null;
-  const cost = computeCost(node.meta.model, node.meta.tokensIn, node.meta.tokensOut);
+  const cost = computeCost(node.meta.model, node.meta);
   return (
     <aside
       style={{
@@ -49,7 +49,17 @@ export function DetailPanel({ node, onClose, sessionStartedAt }: DetailPanelProp
         <Row label="Czas" value={node.meta.timestamp ?? "—"} />
         <Row label="Czas względny" value={formatRelative(sessionStartedAt, node.meta.timestamp)} />
         <Row label="Tokeny in/out" value={`${node.meta.tokensIn} / ${node.meta.tokensOut}`} />
-        <Row label="Koszt" value={cost !== null ? formatUsd(cost) : "—"} />
+        <Row
+          label="Tokeny cache (odczyt/zapis)"
+          value={`${node.meta.cacheReadTokens} / ${node.meta.cacheCreationTokens}`}
+        />
+        <Row label="Koszt" value={cost !== null ? formatUsd(cost.total) : "—"} />
+        {cost !== null && (
+          <Row
+            label="— rozbicie"
+            value={`we ${formatUsd(cost.input)} · wy ${formatUsd(cost.output)} · cache odczyt ${formatUsd(cost.cacheRead)} · cache zapis ${formatUsd(cost.cacheWrite)}`}
+          />
+        )}
       </dl>
 
       <h3 style={{ fontSize: 13, marginTop: 16 }}>Izolacja</h3>
