@@ -1,0 +1,10 @@
+services:
+  glassbox:
+    build: .
+    ports:
+      - "4517:4517"
+    volumes:
+      - ${HOME}/.claude/projects:/sessions:ro
+    environment:
+      GLASSBOX_SESSIONS_DIR: /sessions
+    restart: unless-stopped
