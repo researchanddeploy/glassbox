@@ -59,6 +59,34 @@ na jej koniec i bez ręcznego wczytywania pliku po każdej zmianie.
 node server/live.mjs ~/.claude/projects/<projekt>/<sesja>.jsonl
 ```
 
+### Katalog sesji
+
+Bez argumentu CLI serwer startuje w trybie **katalogu sesji** zamiast
+pojedynczego pliku — domyślne użycie:
+
+```bash
+node server/live.mjs                              # katalog domyślny: ~/.claude/projects
+GLASSBOX_SESSIONS_DIR=/inna/sciezka node server/live.mjs
+```
+
+W tym trybie:
+
+- `GET /sessions` — lista wszystkich `*.jsonl` w katalogu (rekurencyjnie),
+  posortowana po `mtime` malejąco, pliki 0 B pominięte, limit 500 wpisów.
+- `GET /events?session=<ścieżka-względna>` — SSE dla wskazanego pliku, jak w
+  trybie pojedynczego pliku. Ścieżka jest walidowana (`server/sessionPath.mjs`,
+  przetestowane w `vitest`): `..`, ścieżki absolutne i symlinki wyprowadzające
+  poza katalog sesji dostają `HTTP 400`.
+- `GET /healthz` — `200 {"ok":true}`, używane też przez `HEALTHCHECK` obrazu Docker.
+
+W UI (nagłówek): pole adresu serwera i lista rozwijana sesji (mtime + rozmiar).
+Wybór sesji łączy się przez SSE tak samo jak przycisk „Live”. Adres serwera i
+ostatnio wybrana sesja są trzymane w `localStorage` — przy starcie UI oferuje
+wznowienie ostatniej sesji jednym kliknięciem.
+
+Argument CLI ze ścieżką pliku (jak wyżej) nadal działa i ma pierwszeństwo —
+przełącza serwer z powrotem w tryb pojedynczego pliku (`/sessions` niedostępne).
+
 Serwer (Node ≥18, zero zależności runtime — tylko `node:http`/`node:fs`) staje
 na stałym porcie `4517` i śledzi przyrost wskazanego pliku: `fs.watch` plus
 fallback pollingiem co 1s (na wypadek systemów plików, gdzie `fs.watch`
@@ -121,3 +149,27 @@ panel szczegółów dostał sekcję „Izolacja”.
 
 Pełna metodologia i cytaty ze zbadanych transkryptów — komentarz na górze
 `src/parser/sandbox.ts`.
+
+## Uruchomienie w OrbStack
+
+Obraz produkcyjny (`Dockerfile`, multi-stage: build na `node:22-alpine` z
+`npm run build`, runtime z samym `server/` + `dist/`, użytkownik non-root,
+`HEALTHCHECK` na `/healthz`) serwuje statyczny build i backend live z jednego
+kontenera — bez `npm run dev`.
+
+```bash
+docker compose up -d --build
+```
+
+`compose.yaml` mapuje port `4517:4517`, montuje `${HOME}/.claude/projects` w
+kontenerze pod `/sessions` (`:ro`) i ustawia `GLASSBOX_SESSIONS_DIR=/sessions`
+— serwer w kontenerze startuje więc od razu w trybie katalogu sesji. Po
+starcie: `http://localhost:4517`.
+
+```bash
+curl localhost:4517/healthz     # {"ok":true}
+curl localhost:4517/sessions    # lista sesji z hosta, tylko do odczytu
+```
+
+Uwaga: adresy `*.orb.local` OrbStacka nie rozwiązują się z poziomu sandboxa
+narzędzi (Bash tool) — weryfikuj kontener wyłącznie przez `localhost`.
