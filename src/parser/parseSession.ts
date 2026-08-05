@@ -6,6 +6,7 @@ import type {
   SessionGraph,
   SessionMeta,
 } from "./types.ts";
+import { classifySandbox, NO_SANDBOX_INFO } from "./sandbox.ts";
 
 const DETAIL_LIMIT = 2000; // ~2 KB w znakach ASCII
 
@@ -173,6 +174,7 @@ export function parseSession(jsonl: string): SessionGraph {
     detail: "",
     output: "",
     meta: makeMeta(lines[0]?.timestamp ?? null, null, "unknown"),
+    sandbox: NO_SANDBOX_INFO,
   });
 
   const mainAgentId = "agent-main";
@@ -183,6 +185,7 @@ export function parseSession(jsonl: string): SessionGraph {
     detail: "",
     output: "",
     meta: makeMeta(lines[0]?.timestamp ?? null, null, "ok"),
+    sandbox: NO_SANDBOX_INFO,
   });
   edges.push({ id: nextId("edge"), type: "spawns", source: sessionNodeId, target: mainAgentId });
 
@@ -210,6 +213,7 @@ export function parseSession(jsonl: string): SessionGraph {
       detail: path,
       output: "",
       meta: makeMeta(timestamp, null, "unknown"),
+      sandbox: NO_SANDBOX_INFO,
     });
     return id;
   }
@@ -261,6 +265,7 @@ export function parseSession(jsonl: string): SessionGraph {
             detail: truncate(prompt),
             output: result?.text ?? "",
             meta: makeMeta(line.timestamp, subagentType, status),
+            sandbox: classifySandbox(name, input),
           });
           addEdge("spawns", activeAgentId, subagentId);
           pendingSpawn = { agentId: subagentId, toolUseId };
@@ -275,6 +280,7 @@ export function parseSession(jsonl: string): SessionGraph {
           detail: truncate(toolInputSummary(name, input)),
           output: result?.text ?? "",
           meta: makeMeta(line.timestamp, agentNode?.meta.model ?? null, status),
+          sandbox: classifySandbox(name, input),
         });
         addEdge("calls", activeAgentId, toolNodeId);
 

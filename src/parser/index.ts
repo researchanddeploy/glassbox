@@ -1,4 +1,5 @@
 export { parseSession } from "./parseSession";
+export { classifySandbox, NO_SANDBOX_INFO } from "./sandbox";
 export type {
   EdgeType,
   GraphEdge,
@@ -8,4 +9,7 @@ export type {
   NodeStatus,
   SessionGraph,
   SessionMeta,
+  BoundaryCrossing,
+  IsolationType,
+  SandboxInfo,
 } from "./types";
