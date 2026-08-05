@@ -5,7 +5,7 @@
 // Rejestracja: `claude mcp add --transport http glassbox http://127.0.0.1:4517/mcp`.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { parseSession } from "../src/parser/index.ts";
-import { TSV_LEGEND, serializeCompact, serializeNode } from "./graphSerializer.mjs";
+import { TSV_LEGEND, buildIdMaps, serializeNode, serializeProjection } from "./graphSerializer.mjs";
 import { listSessions } from "./sessionsList.mjs";
 import { resolveSessionPath } from "./sessionPath.mjs";
 import { readSubagentSidecars } from "./subagents.mjs";
@@ -30,13 +30,21 @@ export const TOOLS = [
   {
     name: "get_session_graph",
     description:
-      "Graf wykonania sesji w kompaktowym TSV (typowo 1–11 tys. tokenów zależnie od liczby subagentów). " +
-      "Węzły dostają sekwencyjne id n0…nN — używaj ich w get_node_detail i highlight_nodes. " +
-      "format=full dokłada sekcję detail/output per węzeł (drogo — używaj tylko świadomie).",
+      "Rzut zwinięty grafu sesji w kompaktowym TSV: kręgosłup session → main → subagenci " +
+      "zwinięci do jednego wiersza z agregatami (calls/files/errors/cost/pat) — wynik skaluje się " +
+      "z liczbą agentów, nie wywołań. Węzły dostają sekwencyjne id n0…nN (stabilne, z pełnego grafu) — " +
+      "używaj ich w get_node_detail, highlight_nodes i expand. " +
+      "expand=[id agenta] rozwija wskazane poddrzewa; format=full dokłada sekcję detail/output " +
+      "widocznych węzłów (drogo — używaj tylko świadomie).",
     inputSchema: {
       type: "object",
       properties: {
         session: { type: "string", description: "Ścieżka względna sesji z list_sessions." },
+        expand: {
+          type: "array",
+          items: { type: "string" },
+          description: "Id agentów (nX albo oryginalne) do rozwinięcia pełnym poddrzewem.",
+        },
         format: { type: "string", enum: ["compact", "full"], description: "Domyślnie compact." },
       },
       required: ["session"],
@@ -113,16 +121,21 @@ export function createMcpHandler({ sessionsDir, broadcastHighlight }) {
 
   function toolGetSessionGraph(args) {
     const { graph } = loadGraph(args?.session);
-    const { tsv } = serializeCompact(graph);
+    if (args?.expand !== undefined && !Array.isArray(args.expand)) {
+      throw new Error("Parametr `expand` musi być tablicą identyfikatorów agentów.");
+    }
+    const { idMap } = buildIdMaps(graph);
+    const expanded = (args?.expand ?? []).map((id) => toOriginalId(graph, idMap, String(id)));
+    const { tsv, reverse, visibleNodes } = serializeProjection(graph, expanded);
     const m = graph.meta;
     const header =
-      `# sesja ${m.sessionId ?? "?"} · węzły ${graph.nodes.length} · krawędzie ${graph.edges.length}` +
+      `# sesja ${m.sessionId ?? "?"} · rzut ${visibleNodes.length}/${graph.nodes.length} węzłów (subagenci zwinięci — rozwiń przez expand)` +
       ` · agentów ${m.agentCount} · narzędzi ${m.toolCallCount} · plików ${m.fileCount}` +
       ` · sidecary ${m.sidecarsAttached} · tokeny ${m.totalTokensIn}/${m.totalTokensOut}`;
     let body = `${header}\n${TSV_LEGEND}\n${tsv}`;
     if (args?.format === "full") {
-      const details = graph.nodes
-        .map((n, i) => `n${i}\t${n.detail.replace(/[\t\n\r]+/g, " ")}\t${n.output.replace(/[\t\n\r]+/g, " ")}`)
+      const details = visibleNodes
+        .map((n) => `${reverse.get(n.id)}\t${n.detail.replace(/[\t\n\r]+/g, " ")}\t${n.output.replace(/[\t\n\r]+/g, " ")}`)
         .join("\n");
       body += `\n# detale (id\tdetail\toutput):\n${details}`;
     }
@@ -138,7 +151,7 @@ export function createMcpHandler({ sessionsDir, broadcastHighlight }) {
 
   function toolGetNodeDetail(args) {
     const { graph } = loadGraph(args?.session);
-    const { idMap, reverse } = serializeCompact(graph);
+    const { idMap, reverse } = buildIdMaps(graph);
     const orig = toOriginalId(graph, idMap, String(args?.node_id ?? ""));
     return JSON.stringify(serializeNode(graph, orig, reverse), null, 1);
   }
@@ -146,7 +159,7 @@ export function createMcpHandler({ sessionsDir, broadcastHighlight }) {
   function toolHighlightNodes(args) {
     const { abs, graph } = loadGraph(args?.session);
     if (!Array.isArray(args?.node_ids)) throw new Error("Parametr `node_ids` musi być tablicą.");
-    const { idMap } = serializeCompact(graph);
+    const { idMap } = buildIdMaps(graph);
     const ids = args.node_ids.map((id) => toOriginalId(graph, idMap, String(id)));
     const clients = broadcastHighlight(abs, {
       ids,

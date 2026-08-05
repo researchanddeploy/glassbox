@@ -5,15 +5,16 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseSession } from "../src/parser/index.ts";
 import { readSubagentSidecars } from "./subagents.mjs";
-import { serializeCompact, serializeNode } from "./graphSerializer.mjs";
+import { serializeCompact, serializeNode, serializeProjection } from "./graphSerializer.mjs";
 
 const REAL_TRANSCRIPT = process.env.GLASSBOX_REAL_TRANSCRIPT ?? "";
 
 /** Przelicznik z planu (§3): ~3,5 bajta na token. */
 const BYTES_PER_TOKEN = 3.5;
-// Plan zakładał 8000 przy parserze jednoplikowym; po sklejeniu sidecarów sesja
-// orkiestracyjna (699 węzłów) zmierzona na ~10 552 tok. — sufit 16 000 jako
-// asercja regresji formatu, nie powrót do starych widełek
+// Budżet egzekwowany na RZUCIE ZWINIĘTYM (domyślny wynik get_session_graph):
+// największa sesja z dysku (79 sidecarów, 5962 węzły pełne → 1071 w rzucie)
+// zmierzona 2026-08-05 na ~13 tys. tokenów. Pełny płaski TSV tej sesji to
+// ~100 tys. tokenów — dlatego NIE jest domyślnym wynikiem narzędzia
 // (kb lessons/glassbox-budzet-po-zmianie-zrodla).
 const TOKEN_BUDGET = 16000;
 
@@ -68,6 +69,40 @@ describe("serializeCompact", () => {
   });
 });
 
+describe("serializeProjection", () => {
+  const graph = parseSession(sampleRaw);
+  const { reverse } = serializeCompact(graph);
+
+  it("rzut zwinięty jest mniejszy od pełnego grafu i niesie agregaty subagentów", () => {
+    const proj = serializeProjection(graph);
+    expect(proj.visibleNodes.length).toBeLessThan(graph.nodes.length);
+    // zwinięty subagent = jeden wiersz z kolumną agregatu calls=
+    const aggLines = proj.tsv.split("\n").filter((l) => l.includes("calls="));
+    expect(aggLines.length).toBeGreaterThan(0);
+    // main jest rozwinięty — nie ma agregatu
+    const mainLine = proj.tsv.split("\n").find((l) => l.startsWith(`${reverse.get("agent-main")}\t`));
+    expect(mainLine).not.toContain("calls=");
+  });
+
+  it("numeracja nX w rzucie jest zgodna z pełnym grafem", () => {
+    const proj = serializeProjection(graph);
+    for (const node of proj.visibleNodes) {
+      const nid = reverse.get(node.id);
+      expect(proj.tsv.split("\n").some((l) => l.startsWith(`${nid}\t`))).toBe(true);
+    }
+  });
+
+  it("expand rozwija poddrzewo wskazanego agenta", () => {
+    const collapsed = serializeProjection(graph);
+    const sub = graph.nodes.find((n) => n.type === "agent" && n.id !== "agent-main");
+    const expanded = serializeProjection(graph, [sub.id]);
+    expect(expanded.visibleNodes.length).toBeGreaterThan(collapsed.visibleNodes.length);
+    // rozwinięty agent traci kolumnę agregatu
+    const line = expanded.tsv.split("\n").find((l) => l.startsWith(`${reverse.get(sub.id)}\t`));
+    expect(line).not.toContain("calls=");
+  });
+});
+
 describe("serializeNode", () => {
   const graph = parseSession(sampleRaw);
   const { idMap, reverse } = serializeCompact(graph);
@@ -91,13 +126,16 @@ describe("serializeNode", () => {
 describe("budżet tokenów — realny transkrypt", () => {
   const maybeIt = REAL_TRANSCRIPT ? it : it.skip;
 
-  maybeIt(`kompakt realnej sesji mieści się w ${TOKEN_BUDGET} tokenach`, () => {
+  maybeIt(`rzut zwinięty realnej sesji mieści się w ${TOKEN_BUDGET} tokenach`, () => {
     const raw = readFileSync(REAL_TRANSCRIPT, "utf-8");
     // Sidecary sklejone jak w serwerze MCP — budżet mierzy pełny graf, nie 20% prawdy.
     const graph = parseSession(raw, readSubagentSidecars(REAL_TRANSCRIPT));
-    const { tsv } = serializeCompact(graph);
+    const { tsv, visibleNodes } = serializeProjection(graph);
     const tokens = Buffer.byteLength(tsv, "utf-8") / BYTES_PER_TOKEN;
-    console.log(`[real] TSV: ${tsv.length} znaków ≈ ${Math.round(tokens)} tokenów (węzły: ${graph.nodes.length})`);
+    console.log(
+      `[real] rzut TSV: ${tsv.length} znaków ≈ ${Math.round(tokens)} tokenów ` +
+        `(rzut ${visibleNodes.length}/${graph.nodes.length} węzłów)`,
+    );
     expect(tokens).toBeLessThan(TOKEN_BUDGET);
   });
 });

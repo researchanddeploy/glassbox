@@ -70,14 +70,28 @@ describe("createMcpHandler", () => {
     expect(parsed[0].nodes).toBeGreaterThan(0);
   });
 
-  it("get_session_graph zwraca TSV z legendą i nagłówkiem", () => {
+  it("get_session_graph zwraca rzut zwinięty: TSV z legendą, nagłówkiem i agregatami", () => {
     const res = call("get_session_graph", { session: "proj/sample.jsonl" });
     const text = res.result.content[0].text;
     expect(res.result.isError).toBeUndefined();
-    expect(text).toMatch(/^# sesja /);
+    expect(text).toMatch(/^# sesja .* · rzut \d+\/\d+ węzłów/);
     expect(text).toContain("# węzeł: id");
     expect(text).toMatch(/\nn0\t/);
     expect(text).toMatch(/\n[sct]\tn\d+\tn\d+/); // sekcja krawędzi
+    // zwinięty subagent niesie agregat we wierszu danych (nie w legendzie #)
+    expect(text.split("\n").some((l) => !l.startsWith("#") && l.includes("calls="))).toBe(true);
+  });
+
+  it("get_session_graph z expand rozwija poddrzewo wskazanego agenta", () => {
+    const collapsed = call("get_session_graph", { session: "proj/sample.jsonl" }).result.content[0].text;
+    // pierwszy zwinięty agent: wiersz z kolumną agregatu (nie linia legendy #)
+    const aggLine = collapsed.split("\n").find((l) => !l.startsWith("#") && l.includes("calls="));
+    const agentNid = aggLine.split("\t")[0];
+    const expanded = call("get_session_graph", { session: "proj/sample.jsonl", expand: [agentNid] }).result
+      .content[0].text;
+    expect(expanded.split("\n").length).toBeGreaterThan(collapsed.split("\n").length);
+    const line = expanded.split("\n").find((l) => l.startsWith(`${agentNid}\t`));
+    expect(line).not.toContain("calls=");
   });
 
   it("get_node_detail po nX zwraca pełny detal", () => {

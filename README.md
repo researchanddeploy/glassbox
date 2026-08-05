@@ -146,7 +146,7 @@ Cztery narzędzia:
 | Narzędzie | Działanie |
 |---|---|
 | `list_sessions` | lista ostatnich sesji (ścieżka, rozmiar, mtime, liczba węzłów) |
-| `get_session_graph` | graf sesji w kompaktowym TSV (zmierzone 2–10,5 tys. tokenów zależnie od liczby subagentów; id sekwencyjne `n0…nN`) |
+| `get_session_graph` | rzut zwinięty grafu w kompaktowym TSV: kręgosłup main + jeden wiersz agregatu per subagent (calls/files/errors/cost/pat) — skaluje się z liczbą agentów, nie wywołań; `expand: [id]` rozwija poddrzewo; id sekwencyjne `n0…nN` stabilne względem pełnego grafu |
 | `get_node_detail` | pełny `detail`/`output`/`toolUseResult` + sąsiedztwo jednego węzła (~1200 tokenów) |
 | `highlight_nodes` | podświetla wskazane węzły w otwartym UI (broadcast SSE, obrys teal + adnotacja w nagłówku) |
 
