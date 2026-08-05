@@ -2,9 +2,12 @@ services:
   glassbox:
     build: .
     ports:
-      - "4517:4517"
+      # tylko pętla lokalna hosta — transkrypty nie wychodzą do sieci LAN
+      - "127.0.0.1:4517:4517"
     volumes:
       - ${HOME}/.claude/projects:/sessions:ro
     environment:
       GLASSBOX_SESSIONS_DIR: /sessions
+      # w kontenerze nasłuch na 0.0.0.0 — mapowanie portu wyżej pilnuje ekspozycji
+      GLASSBOX_HOST: 0.0.0.0
     restart: unless-stopped
