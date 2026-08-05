@@ -2,6 +2,7 @@ import { Handle, Position, useStore, type NodeProps, type ReactFlowState } from 
 import type { GraphNode } from "../parser/types";
 import { lodForZoom, type AgentAggregates } from "../layout/collapse";
 import { computeCost, formatUsd } from "../pricing";
+import { useNodeChannelClasses } from "../channelStore";
 
 /** Dane węzła karty: graf + stan collapse z projekcji + callback toggle z App. */
 export interface CardData {
@@ -41,17 +42,24 @@ interface CardProps extends NodeProps {
 function Card({ data, accent, icon }: CardProps) {
   const { node, collapsed, aggregates, onToggle } = data as unknown as CardData;
   const lod = useStore(lodSelector);
+  // Kanały selekcji/replay przez store + CSS — krok scrubbera nie przepisuje
+  // tablicy węzłów; re-render tylko karty, której klasa faktycznie się zmienia.
+  const channelClasses = useNodeChannelClasses(node.id);
   const tokens = node.meta.tokensIn + node.meta.tokensOut;
   const cost = computeCost(node.meta.model, node.meta);
   const isCollapsedAgent = node.type === "agent" && collapsed === true;
+  if (import.meta.env.DEV) {
+    // Licznik renderów kart (tylko dev) — dowód, że scrub nie renderuje wszystkiego.
+    const w = window as unknown as { __gbCardRenders?: number };
+    w.__gbCardRenders = (w.__gbCardRenders ?? 0) + 1;
+  }
   return (
     <div
+      className={channelClasses}
       style={{
         width: 220,
-        borderRadius: 10,
         border: `1.5px solid ${accent}`,
         background: "#fff",
-        boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
         padding: "8px 10px",
         fontSize: 12,
         lineHeight: 1.35,

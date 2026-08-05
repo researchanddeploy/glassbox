@@ -1,18 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
-import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge } from "@xyflow/react";
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  MiniMap,
+  type Node,
+  type Edge,
+  type ReactFlowInstance,
+} from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { parseSession } from "./parser";
 import type { GraphNode, SessionGraph, SessionMeta, SubagentSidecar } from "./parser/types";
 import { layoutProjected } from "./layout/elkLayout";
 import { MAIN_AGENT_ID, projectGraph } from "./layout/collapse";
 import { AgentGroupNode, AgentNode, FileNode, IsolationGroupNode, SessionNode, ToolCallNode } from "./nodes/nodeCards";
+import { ChannelEdge } from "./nodes/channelEdge";
+import { computeReplayChannel, neighborIdsOf, type ReplayItem } from "./channels";
+import { setChannels } from "./channelStore";
 import { DetailPanel } from "./DetailPanel";
 import { Scrubber } from "./Scrubber";
 import { aggregateSessionCost, formatUsd } from "./pricing";
 import { toEpoch } from "./time";
 
-const DIMMED_OPACITY = 0.12;
-const ACTIVE_GLOW = "0 0 0 3px #aa3bff, 0 0 18px 5px rgba(170,59,255,0.55)";
 const DEFAULT_SERVER_ADDR = "http://localhost:4517";
 const SERVER_ADDR_KEY = "glassbox.serverAddr";
 const LAST_SESSION_KEY = "glassbox.lastSession";
@@ -81,6 +90,11 @@ const nodeTypes = {
   agentGroup: AgentGroupNode,
 };
 
+// Domyślna krawędź z kanałami selekcji/replay (klasy gb-* przez store + CSS).
+const edgeTypes = { default: ChannelEdge };
+
+const GROUP_TYPES = new Set(["isolationGroup", "agentGroup"]);
+
 export default function App() {
   // Pełny graf sesji żyje poza React Flow; do <ReactFlow> trafia rzut
   // (projectGraph) przeliczony przez ELK po każdej zmianie zwinięcia.
@@ -93,6 +107,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   // Sidecary subagentów bieżącej sesji (fetch z /subagents przy wyborze sesji).
   const sidecarsRef = useRef<SubagentSidecar[]>([]);
+  // Instancja React Flow do fitView({ nodes }) po kliknięciu węzła.
+  const rfRef = useRef<ReactFlowInstance | null>(null);
 
   // Replay: timeline liczona raz przy wczytaniu, layout policzony raz — scrubber
   // zmienia tylko widoczność (opacity), nigdy nie przelicza elk.
@@ -268,48 +284,54 @@ export default function App() {
 
   const currentTime = timestamps[index] ?? null;
 
-  // Dopasowanie widoczności węzłów/krawędzi do pozycji scrubbera + wybór aktywnego węzła
-  // (ostatni utworzony w danym momencie replay). Nie dotyka pozycji z layoutu.
-  const { styledNodes, styledEdges, activeNode } = useMemo(() => {
-    if (currentTime === null) {
-      return { styledNodes: flowNodes, styledEdges: flowEdges, activeNode: null as GraphNode | null };
-    }
-    const dimmed = new Set<string>();
-    let active: GraphNode | null = null;
-    let activeEpoch = -Infinity;
-    for (const n of flowNodes) {
-      if (n.type === "isolationGroup" || n.type === "agentGroup") continue; // obrys grupy nie ma własnego czasu — zawsze widoczny
-      const gn = (n.data as { node: GraphNode }).node;
-      const epoch = toEpoch(gn.meta.timestamp);
-      if (epoch !== null && epoch > currentTime) {
-        dimmed.add(n.id);
-      } else if (epoch !== null && epoch >= activeEpoch) {
-        activeEpoch = epoch;
-        active = gn;
-      }
-    }
-    const sNodes = flowNodes.map((n) =>
-      n.type === "isolationGroup" || n.type === "agentGroup"
-        ? n // grupy nie uczestniczą w replayu — styl (width/height) zostaje nietknięty
-        : {
-            ...n,
-            style: {
-              ...n.style,
-              opacity: dimmed.has(n.id) ? DIMMED_OPACITY : 1,
-              boxShadow: active?.id === n.id ? ACTIVE_GLOW : undefined,
-              borderRadius: 10,
-            },
-          },
-    );
-    const sEdges = flowEdges.map((e) => ({
-      ...e,
-      style: {
-        ...e.style,
-        opacity: dimmed.has(e.source) || dimmed.has(e.target) ? DIMMED_OPACITY : 1,
-      },
-    }));
-    return { styledNodes: sNodes, styledEdges: sEdges, activeNode: active };
-  }, [flowNodes, flowEdges, currentTime]);
+  // Kanał replay bez przepisywania tablic: krok scrubbera aktualizuje store
+  // kanałów (klasy CSS w kartach/krawędziach), a `flowNodes`/`flowEdges`
+  // zachowują tożsamość — React Flow nie rekonsyliuje wtedy żadnego węzła.
+  // Obrysy grup nie mają własnego czasu, więc nie uczestniczą w replayu.
+  const replayItems = useMemo<ReplayItem[]>(
+    () =>
+      flowNodes
+        .filter((n) => !GROUP_TYPES.has(n.type ?? ""))
+        .map((n) => ({ id: n.id, epoch: toEpoch((n.data as { node: GraphNode }).node.meta.timestamp) })),
+    [flowNodes],
+  );
+  const replay = useMemo(() => computeReplayChannel(replayItems, currentTime), [replayItems, currentTime]);
+  useEffect(() => {
+    setChannels({ replayDimmedIds: replay.dimmedIds, activeId: replay.activeId });
+  }, [replay]);
+
+  // Kanał selekcji: obwódka klikniętego + sąsiedzi 1-hop, reszta wygaszona przez CSS.
+  const neighborIds = useMemo(
+    () => (selected ? neighborIdsOf(flowEdges, selected.id) : new Set<string>()),
+    [selected, flowEdges],
+  );
+  useEffect(() => {
+    setChannels({ selectedId: selected?.id ?? null, neighborIds });
+  }, [selected, neighborIds]);
+
+  const activeNode = useMemo<GraphNode | null>(() => {
+    if (replay.activeId === null) return null;
+    const n = flowNodes.find((fn) => fn.id === replay.activeId);
+    return n ? (n.data as { node: GraphNode }).node : null;
+  }, [replay.activeId, flowNodes]);
+
+  // Handlery React Flow MUSZĄ być memoizowane: nowa referencja trafia do store'u
+  // React Flow i re-renderuje wszystkie NodeWrappery przy każdym re-renderze App
+  // (zmierzone: 82 karty × krok scrubbera mimo tożsamej tablicy węzłów).
+  const onInit = useCallback((inst: ReactFlowInstance) => {
+    rfRef.current = inst;
+  }, []);
+
+  const onNodeClick = useCallback(
+    (_: unknown, n: Node) => {
+      if (GROUP_TYPES.has(n.type ?? "")) return; // obrys grupy nie ma panelu szczegółów
+      setSelected((n.data as { node: GraphNode }).node);
+      // Quick win: kadruj kliknięty węzeł z sąsiadami 1-hop (kanał selekcji).
+      const ids = [n.id, ...neighborIdsOf(flowEdges, n.id)];
+      rfRef.current?.fitView({ nodes: ids.map((id) => ({ id })), padding: 0.3, duration: 400, maxZoom: 1.2 });
+    },
+    [flowEdges],
+  );
 
   // Podczas odtwarzania panel szczegółów podąża za aktywnym węzłem.
   useEffect(() => {
@@ -468,19 +490,18 @@ export default function App() {
           </div>
         ) : (
           <ReactFlow
-            nodes={styledNodes}
-            edges={styledEdges}
+            nodes={flowNodes}
+            edges={flowEdges}
             nodeTypes={nodeTypes}
-            onNodeClick={(_, n) => {
-              if (n.type === "isolationGroup" || n.type === "agentGroup") return; // obrys grupy nie ma panelu szczegółów
-              setSelected((n.data as { node: GraphNode }).node);
-            }}
+            edgeTypes={edgeTypes}
+            onInit={onInit}
+            onNodeClick={onNodeClick}
             fitView
             minZoom={0.05} // pułapka: domyślny minZoom 0.5 nie pozwala fitView zmieścić dużego grafu
           >
             <Background />
             <Controls />
-            <MiniMap />
+            <MiniMap pannable zoomable />
             <Legend />
           </ReactFlow>
         )}
