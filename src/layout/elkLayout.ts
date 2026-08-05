@@ -146,8 +146,14 @@ export async function layoutProjected(projected: ProjectedGraph): Promise<{ node
       "elk.spacing.nodeNode": "40",
     },
     children: rootChildren,
+    // Krawędzie calls NIE wchodzą do ELK: przynależność tool calli wyraża
+    // containment grupy + łańcuch seq, a wachlarz agent→każde narzędzie
+    // (dziesiątki krawędzi do jednej karty) rozjeżdżał kolumny na skos.
+    // W React Flow calls renderują się normalnie — to decyzja layoutu, nie języka wizualnego.
     edges: [
-      ...projected.edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
+      ...projected.edges
+        .filter((e) => e.type !== "calls")
+        .map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
       ...seqEdges,
     ],
   });
