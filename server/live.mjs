@@ -20,8 +20,24 @@ import { resolveSessionPath } from "./sessionPath.mjs";
 import { listSessions } from "./sessionsList.mjs";
 
 const PORT = 4517;
+// Domyślnie tylko pętla lokalna; kontener ustawia GLASSBOX_HOST=0.0.0.0 (port
+// i tak publikowany na hosta wyłącznie przez mapowanie w compose.yaml).
+const HOST = process.env.GLASSBOX_HOST ?? "127.0.0.1";
 const POLL_MS = 1000; // fallback dla systemów plików, gdzie fs.watch milczy
 const HEARTBEAT_MS = 15000;
+
+/**
+ * CORS tylko dla originów lokalnych (dev UI z Vite na innym porcie).
+ * Origin spoza localhost nie dostaje nagłówka — przeglądarka zablokuje odczyt.
+ * @returns {Record<string, string>}
+ */
+function corsHeaders(req) {
+  const origin = req.headers.origin;
+  if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+    return { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+  }
+  return {};
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = resolve(__dirname, "../dist");
@@ -179,7 +195,9 @@ const server = createServer((req, res) => {
       return;
     }
     const sessions = listSessions(sessionsDir);
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(sessions));
+    res
+      .writeHead(200, { "Content-Type": "application/json", ...corsHeaders(req) })
+      .end(JSON.stringify(sessions));
     return;
   }
 
@@ -210,7 +228,7 @@ const server = createServer((req, res) => {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
-      "Access-Control-Allow-Origin": "*",
+      ...corsHeaders(req),
     });
     res.write("\n");
     sse(res, "backlog", JSON.stringify(tracker.backlog));
@@ -227,8 +245,8 @@ const server = createServer((req, res) => {
   res.writeHead(404).end("not found");
 });
 
-server.listen(PORT, () => {
-  console.log(`Glassbox live server`);
+server.listen(PORT, HOST, () => {
+  console.log(`Glassbox live server (${HOST}:${PORT})`);
   if (singleFilePath) {
     console.log(`  śledzi: ${singleFilePath}`);
   } else {
