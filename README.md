@@ -5,6 +5,11 @@ Wizualizator wykonania sesji Claude Code jako grafu DAG. Wczytuje transkrypt
 rysuje graf: sesja → agenci (main + subagenci) → wywołania narzędzi → pliki,
 z tokenami, modelem i statusem (ok/error) na każdym węźle.
 
+![Tryb live: graf sesji rośnie w miarę napływu zdarzeń](docs/demo.gif)
+
+*Tryb live na przykładzie syntetycznym: nowe zdarzenia dolatują przez SSE,
+graf dokłada węzły, scrubber podąża za końcem osi czasu.*
+
 ## Uruchomienie
 
 ```bash
@@ -170,6 +175,8 @@ starcie: `http://localhost:4517`.
 curl localhost:4517/healthz     # {"ok":true}
 curl localhost:4517/sessions    # lista sesji z hosta, tylko do odczytu
 ```
+
+![Aplikacja serwowana z kontenera OrbStack na porcie 4517](docs/container-screenshot.png)
 
 Uwaga: adresy `*.orb.local` OrbStacka nie rozwiązują się z poziomu sandboxa
 narzędzi (Bash tool) — weryfikuj kontener wyłącznie przez `localhost`.
