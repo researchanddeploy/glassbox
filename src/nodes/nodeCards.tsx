@@ -1,5 +1,6 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { GraphNode } from "../parser/types";
+import { computeCost, formatUsd } from "../pricing";
 
 const STATUS_COLOR: Record<string, string> = {
   ok: "#22a06b",
@@ -15,6 +16,7 @@ interface CardProps extends NodeProps {
 function Card({ data, accent, icon }: CardProps) {
   const node = (data as { node: GraphNode }).node;
   const tokens = node.meta.tokensIn + node.meta.tokensOut;
+  const cost = computeCost(node.meta.model, node.meta.tokensIn, node.meta.tokensOut);
   return (
     <div
       style={{
@@ -59,6 +61,7 @@ function Card({ data, accent, icon }: CardProps) {
       {tokens > 0 && (
         <div style={{ color: "#6b6375" }}>
           ↑{node.meta.tokensIn} ↓{node.meta.tokensOut}
+          {cost !== null ? ` · ${formatUsd(cost)}` : ""}
         </div>
       )}
       <Handle type="source" position={Position.Bottom} style={{ background: accent }} />

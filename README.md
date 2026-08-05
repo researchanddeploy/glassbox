@@ -32,3 +32,18 @@ subagenta w tym trybie żyje poza jednym plikiem `.jsonl`). Warstwa
 prezentacji (Vite + React 18 + `@xyflow/react`) układa graf przez `elkjs`
 (algorytm warstwowy, kierunek DOWN) i renderuje własne karty węzłów
 (`AgentNode`, `ToolCallNode`, `FileNode`) z panelem szczegółów po kliknięciu.
+
+## Replay, oś czasu i koszty
+
+Pasek na dole (`Scrubber`) pozwala odtwarzać sesję event-po-evencie: suwak,
+play/pauza (spacja) i strzałki do kroku. Layout jest liczony raz przy
+wczytaniu — scrubber tylko zmienia widoczność węzłów/krawędzi (wygaszenie do
+opacity 0.12 dla zdarzeń „z przyszłości"), graf „buduje się" chronologicznie
+bez ponownego przeliczania elk. Węzeł najbliższy bieżącej pozycji dostaje
+podświetlenie, a panel szczegółów podąża za nim podczas odtwarzania.
+
+Koszty liczone są ze statycznej mapy cen (`src/pricing.ts`, USD/1M tokenów,
+do ręcznej aktualizacji) — agregacja per agent (main i każdy subagent osobno)
+widoczna na kartach węzłów i jako suma w nagłówku; nieznany model daje `null`
+(pokazywane są wtedy same tokeny, a suma sesji oznaczona jest `+` jako
+częściowa).

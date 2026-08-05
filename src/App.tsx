@@ -1,4 +1,4 @@
-import { useCallback, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import { ReactFlow, Background, Controls, MiniMap, type Node, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { parseSession } from "./parser";
@@ -6,6 +6,12 @@ import type { GraphNode, SessionMeta } from "./parser/types";
 import { layoutGraph } from "./layout/elkLayout";
 import { AgentNode, FileNode, SessionNode, ToolCallNode } from "./nodes/nodeCards";
 import { DetailPanel } from "./DetailPanel";
+import { Scrubber } from "./Scrubber";
+import { aggregateSessionCost, formatUsd } from "./pricing";
+import { toEpoch } from "./time";
+
+const DIMMED_OPACITY = 0.12;
+const ACTIVE_GLOW = "0 0 0 3px #aa3bff, 0 0 18px 5px rgba(170,59,255,0.55)";
 
 const nodeTypes = {
   session: SessionNode,
@@ -21,19 +27,83 @@ export default function App() {
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Replay: timeline liczona raz przy wczytaniu, layout policzony raz — scrubber
+  // zmienia tylko widoczność (opacity), nigdy nie przelicza elk.
+  const [timestamps, setTimestamps] = useState<number[]>([]);
+  const [index, setIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
+
   const loadJsonl = useCallback(async (text: string) => {
     setError(null);
     try {
       const graph = parseSession(text);
       const { nodes, edges } = await layoutGraph(graph.nodes, graph.edges);
+      const ts = Array.from(
+        new Set(graph.nodes.map((n) => toEpoch(n.meta.timestamp)).filter((t): t is number => t !== null)),
+      ).sort((a, b) => a - b);
       setFlowNodes(nodes);
       setFlowEdges(edges);
       setMeta(graph.meta);
+      setTimestamps(ts);
+      setIndex(ts.length > 0 ? ts.length - 1 : 0); // domyślnie: pełny graf
+      setPlaying(false);
       setSelected(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  const currentTime = timestamps[index] ?? null;
+
+  // Dopasowanie widoczności węzłów/krawędzi do pozycji scrubbera + wybór aktywnego węzła
+  // (ostatni utworzony w danym momencie replay). Nie dotyka pozycji z layoutu.
+  const { styledNodes, styledEdges, activeNode } = useMemo(() => {
+    if (currentTime === null) {
+      return { styledNodes: flowNodes, styledEdges: flowEdges, activeNode: null as GraphNode | null };
+    }
+    const dimmed = new Set<string>();
+    let active: GraphNode | null = null;
+    let activeEpoch = -Infinity;
+    for (const n of flowNodes) {
+      const gn = (n.data as { node: GraphNode }).node;
+      const epoch = toEpoch(gn.meta.timestamp);
+      if (epoch !== null && epoch > currentTime) {
+        dimmed.add(n.id);
+      } else if (epoch !== null && epoch >= activeEpoch) {
+        activeEpoch = epoch;
+        active = gn;
+      }
+    }
+    const sNodes = flowNodes.map((n) => ({
+      ...n,
+      style: {
+        ...n.style,
+        opacity: dimmed.has(n.id) ? DIMMED_OPACITY : 1,
+        boxShadow: active?.id === n.id ? ACTIVE_GLOW : undefined,
+        borderRadius: 10,
+      },
+    }));
+    const sEdges = flowEdges.map((e) => ({
+      ...e,
+      style: {
+        ...e.style,
+        opacity: dimmed.has(e.source) || dimmed.has(e.target) ? DIMMED_OPACITY : 1,
+      },
+    }));
+    return { styledNodes: sNodes, styledEdges: sEdges, activeNode: active };
+  }, [flowNodes, flowEdges, currentTime]);
+
+  // Podczas odtwarzania panel szczegółów podąża za aktywnym węzłem.
+  useEffect(() => {
+    if (playing && activeNode) setSelected(activeNode);
+  }, [playing, activeNode]);
+
+  const costSummary = useMemo(() => {
+    const agents = flowNodes
+      .filter((n) => n.type === "agent")
+      .map((n) => (n.data as { node: GraphNode }).node);
+    return aggregateSessionCost(agents);
+  }, [flowNodes]);
 
   const onFileInput = useCallback(
     (file: File) => {
@@ -78,7 +148,8 @@ export default function App() {
         {meta && (
           <span style={{ fontSize: 12, color: "#6b6375" }}>
             agentów: {meta.agentCount} · narzędzi: {meta.toolCallCount} · plików: {meta.fileCount} · tokeny:{" "}
-            {meta.totalTokensIn}/{meta.totalTokensOut} · pominięto linii: {meta.skippedLines}
+            {meta.totalTokensIn}/{meta.totalTokensOut} · koszt: {formatUsd(costSummary.cost)}
+            {costSummary.partial ? "+" : ""} · pominięto linii: {meta.skippedLines}
           </span>
         )}
         {error && <span style={{ fontSize: 12, color: "#d9455f" }}>{error}</span>}
@@ -104,8 +175,8 @@ export default function App() {
           </div>
         ) : (
           <ReactFlow
-            nodes={flowNodes}
-            edges={flowEdges}
+            nodes={styledNodes}
+            edges={styledEdges}
             nodeTypes={nodeTypes}
             onNodeClick={(_, n) => setSelected((n.data as { node: GraphNode }).node)}
             fitView
@@ -117,7 +188,17 @@ export default function App() {
         )}
       </div>
 
-      <DetailPanel node={selected} onClose={() => setSelected(null)} />
+      {timestamps.length > 0 && (
+        <Scrubber
+          timestamps={timestamps}
+          index={index}
+          playing={playing}
+          onIndexChange={setIndex}
+          onPlayingChange={setPlaying}
+        />
+      )}
+
+      <DetailPanel node={selected} onClose={() => setSelected(null)} sessionStartedAt={meta?.startedAt ?? null} />
     </div>
   );
 }

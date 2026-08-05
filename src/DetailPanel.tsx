@@ -1,9 +1,13 @@
 import type { CSSProperties } from "react";
 import type { GraphNode } from "./parser/types";
+import { computeCost, formatUsd } from "./pricing";
+import { formatRelative } from "./time";
 
 interface DetailPanelProps {
   node: GraphNode | null;
   onClose: () => void;
+  /** Start sesji (ISO) — do liczenia czasu względnego mm:ss. */
+  sessionStartedAt: string | null;
 }
 
 const TYPE_LABEL: Record<GraphNode["type"], string> = {
@@ -13,8 +17,9 @@ const TYPE_LABEL: Record<GraphNode["type"], string> = {
   file: "Plik",
 };
 
-export function DetailPanel({ node, onClose }: DetailPanelProps) {
+export function DetailPanel({ node, onClose, sessionStartedAt }: DetailPanelProps) {
   if (!node) return null;
+  const cost = computeCost(node.meta.model, node.meta.tokensIn, node.meta.tokensOut);
   return (
     <aside
       style={{
@@ -42,7 +47,9 @@ export function DetailPanel({ node, onClose }: DetailPanelProps) {
         <Row label="Status" value={node.meta.status} />
         <Row label="Model" value={node.meta.model ?? "—"} />
         <Row label="Czas" value={node.meta.timestamp ?? "—"} />
+        <Row label="Czas względny" value={formatRelative(sessionStartedAt, node.meta.timestamp)} />
         <Row label="Tokeny in/out" value={`${node.meta.tokensIn} / ${node.meta.tokensOut}`} />
+        <Row label="Koszt" value={cost !== null ? formatUsd(cost) : "—"} />
       </dl>
 
       {node.detail && (
