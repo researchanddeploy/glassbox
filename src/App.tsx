@@ -137,6 +137,8 @@ export default function App() {
 
   // Live mode: SSE do server/live.mjs, akumulacja linii JSONL, reparse debounced.
   const [liveStatus, setLiveStatus] = useState<"off" | "connected" | "disconnected">("off");
+  // Kanał MCP: adnotacja z ostatniego highlight_nodes (obrys niosą klasy gb-* przez store).
+  const [highlightNote, setHighlightNote] = useState<string | null>(null);
   const liveRawRef = useRef("");
   const followRef = useRef(true); // "follow": nowe dane trzymają scrubber na końcu osi
   const esRef = useRef<EventSource | null>(null);
@@ -251,6 +253,9 @@ export default function App() {
       setSelected(null);
       liveRawRef.current = "";
       followRef.current = true;
+      // Podświetlenie MCP dotyczy konkretnej sesji — zmiana sesji je gasi.
+      setChannels({ highlightedIds: new Set() });
+      setHighlightNote(null);
       if (session) setSelectedSession(session);
       // Sidecary subagentów: jeden fetch przy starcie sesji; po nadejściu reparse,
       // bo backlog SSE mógł już zbudować graf bez nich. ponytail: bez tail sidecarów.
@@ -286,6 +291,12 @@ export default function App() {
       es.addEventListener("line", (ev) => {
         liveRawRef.current += (ev as MessageEvent).data + "\n";
         scheduleUpdate();
+      });
+      // Narzędzie MCP highlight_nodes → obrys wskazanych węzłów (kanał gb-mcp-highlight).
+      es.addEventListener("highlight", (ev) => {
+        const { ids, note } = JSON.parse((ev as MessageEvent).data) as { ids: string[]; note: string | null };
+        setChannels({ highlightedIds: new Set(ids) });
+        setHighlightNote(ids.length > 0 ? note : null);
       });
     },
     [loadJsonl, serverAddr, selectedSession, stopLive],
@@ -508,6 +519,24 @@ export default function App() {
               }}
             />
             {liveStatus === "connected" ? "połączono" : "rozłączono"}
+          </span>
+        )}
+        {highlightNote && (
+          <span
+            title="Adnotacja z highlight_nodes (MCP)"
+            style={{
+              fontSize: 12,
+              color: "var(--gb-highlight)",
+              border: "1px solid var(--gb-highlight)",
+              borderRadius: 6,
+              padding: "3px 8px",
+              maxWidth: 320,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            ⟡ {highlightNote}
           </span>
         )}
         {meta && (

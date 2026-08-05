@@ -93,6 +93,18 @@ describe("nodeChannelClasses", () => {
     expect(nodeChannelClasses(both, "b")).toBe("gb-card gb-selected gb-replay-active");
     expect(nodeChannelClasses(both, "x")).toBe("gb-card gb-sel-dim gb-replay-dim");
   });
+
+  it("kanał MCP highlight współistnieje z selekcją i replayem", () => {
+    const withHighlight: ChannelState = {
+      ...selection,
+      highlightedIds: new Set(["b", "x"]),
+    };
+    expect(nodeChannelClasses(withHighlight, "b")).toBe("gb-card gb-selected gb-mcp-highlight");
+    expect(nodeChannelClasses(withHighlight, "x")).toBe("gb-card gb-sel-dim gb-mcp-highlight");
+    expect(nodeChannelClasses({ ...EMPTY_CHANNELS, highlightedIds: new Set(["q"]) }, "q")).toBe(
+      "gb-card gb-mcp-highlight",
+    );
+  });
 });
 
 describe("edgeChannelClasses", () => {
