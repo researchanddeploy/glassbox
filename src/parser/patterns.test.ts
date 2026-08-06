@@ -56,10 +56,13 @@ describe("patternsForNode — wzorce pewne, markery wprost z danych", () => {
     expect(patternsForNode(node({ id: "c", type: "checkpoint" }))).toEqual([]);
   });
 
-  it("escalation: unsandboxed albo odmowa", () => {
+  it("escalation: unsandboxed, odmowa albo zmiana trybu uprawnień na luźniejszy", () => {
     const unsandboxed = node({ id: "u", sandbox: { isolation: "unsandboxed", boundaryCrossings: ["filesystem-out"] } });
     expect(patternsForNode(unsandboxed)).toContain("escalation");
     expect(patternsForNode(withStatus("d", "denied"))).toContain("escalation");
+    expect(
+      patternsForNode(node({ id: "p", type: "turn", taxo: { permEscalation: "plan → bypassPermissions" } })),
+    ).toContain("escalation");
     expect(patternsForNode(node({ id: "s", sandbox: { isolation: "sandboxed", boundaryCrossings: [] } }))).toEqual([]);
   });
 

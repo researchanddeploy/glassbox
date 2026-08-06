@@ -227,6 +227,27 @@ describe("parseSession — przykład syntetyczny (public/sample.jsonl)", () => {
     expect(main?.meta.cacheCreation1hTokens).toBe(150);
   });
 
+  it("permission-mode: eskalację na tryb luźniejszy przypina do tury; zaostrzenie i powtórki ignoruje", () => {
+    const jsonl = [
+      // Stan początkowy (nie eskalacja) + powtórka bez zmiany.
+      '{"type":"permission-mode","permissionMode":"plan","sessionId":"s"}',
+      '{"type":"permission-mode","permissionMode":"plan","sessionId":"s"}',
+      // Zmiana plan → bypassPermissions = eskalacja w turze 1.
+      '{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"s"}',
+      '{"type":"system","subtype":"turn_duration","uuid":"pm-t1","timestamp":"2026-08-05T09:00:01.000Z","durationMs":1000,"messageCount":2}',
+      // Zaostrzenie bypassPermissions → plan — NIE eskalacja.
+      '{"type":"permission-mode","permissionMode":"plan","sessionId":"s"}',
+      '{"type":"system","subtype":"turn_duration","uuid":"pm-t2","timestamp":"2026-08-05T09:00:02.000Z","durationMs":1000,"messageCount":1}',
+    ].join("\n");
+    const graph = parseSession(jsonl);
+    const turns = graph.nodes.filter((n) => n.type === "turn");
+    expect(turns).toHaveLength(2);
+    expect(turns[0].taxo?.permEscalation).toBe("plan → bypassPermissions");
+    expect(turns[0].patterns).toContain("escalation");
+    expect(turns[1].taxo?.permEscalation).toBeUndefined();
+    expect(turns[1].patterns).not.toContain("escalation");
+  });
+
   it("bez podziału TTL traktuje cały zapis cache jako 5m (domyślny TTL)", () => {
     const line =
       '{"type":"assistant","uuid":"ttl-1","timestamp":"2026-08-05T09:00:00.000Z","message":{"id":"msg_ttl","model":"claude-opus-4-8","role":"assistant","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":77}}}';

@@ -26,11 +26,12 @@ export function patternsForNode(node: GraphNode): PatternId[] {
   if (node.type === "checkpoint" && node.taxo?.droppedTokens !== undefined) {
     out.push("saturation_compaction");
   }
-  // Eskalacja: zejście z sandboxa (dangerouslyDisableSandbox → unsandboxed)
-  // albo odmowa wykonania narzędzia (toolDenialKind → status denied).
-  // ponytail: zmiana permissionMode i attachment command_permissions nieobsłużone —
-  // parser nie czyta rekordów `permission-mode`; dodać przy rozszerzeniu parsera.
-  if (node.sandbox.isolation === "unsandboxed" || node.meta.status === "denied") {
+  // Eskalacja: zejście z sandboxa (dangerouslyDisableSandbox → unsandboxed),
+  // odmowa wykonania narzędzia (toolDenialKind → status denied) albo zmiana trybu
+  // uprawnień na luźniejszy (rekordy `permission-mode` → taxo.permEscalation tury).
+  // ponytail: attachment command_permissions (T3: 2×) nadal nieobsłużony — dodać,
+  // gdy pojawi się w realnych danych częściej.
+  if (node.sandbox.isolation === "unsandboxed" || node.meta.status === "denied" || node.taxo?.permEscalation !== undefined) {
     out.push("escalation");
   }
   if (node.taxo?.gateBlocked === true) out.push("gate_block");

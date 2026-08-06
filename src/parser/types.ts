@@ -48,6 +48,8 @@ export interface TaxoAttrs {
   droppedTokens?: number;
   /** tool_call Edit/Write: nowa diagnostyka LSP (`diagnostics.isNew`) w oknie 5 wywołań po edycji. */
   newDiagnostics?: boolean;
+  /** turn: zmiana trybu uprawnień na luźniejszy w tej turze (rekordy `permission-mode`), np. "plan → bypassPermissions". */
+  permEscalation?: string;
 }
 
 export interface NodeMeta {
