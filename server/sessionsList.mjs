@@ -23,6 +23,10 @@ export function listSessions(sessionsDir, limit = DEFAULT_LIMIT) {
     for (const entry of entries) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
+        // Sidecary subagentów (<sesja>/subagents/agent-*.jsonl) to nie sesje
+        // główne — bez wykluczenia zapychają listę i wypychają realne sesje
+        // z limitu. Do grafu dokleja je parser (readSubagentSidecars), nie lista.
+        if (entry.name === "subagents") continue;
         walk(full);
       } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
         let st;

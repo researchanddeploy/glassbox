@@ -16,6 +16,22 @@ const DETAIL_LIMIT = 2000; // ~2 KB w znakach ASCII — limit KART, nie danych (
 const SPAWN_TOOL_NAMES = new Set(["Task", "Agent"]);
 const FILE_TOOL_NAMES = new Set(["Read", "Write", "Edit"]);
 
+/**
+ * Porządek restrykcyjności trybów uprawnień — eskalacja (§3.6 taksonomii) to
+ * przejście na tryb o WYŻSZEJ randze. Wartości zaobserwowane w realnych
+ * transkryptach 2026-08-06: plan, auto, bypassPermissions (101 plików, jedyne
+ * realne przejścia to plan ⇄ bypassPermissions); reszta z dokumentacji trybów.
+ * Tryb spoza mapy nie generuje eskalacji (brak porządku = brak wniosku).
+ */
+const PERMISSION_MODE_RANK = new Map<string, number>([
+  ["plan", 0],
+  ["default", 1],
+  ["acceptEdits", 2],
+  ["auto", 2],
+  ["dontAsk", 3],
+  ["bypassPermissions", 4],
+]);
+
 function truncate(value: string, limit = DETAIL_LIMIT): string {
   return value.length > limit ? `${value.slice(0, limit)}…` : value;
 }
@@ -401,6 +417,12 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
     let turnIndex = 0;
     let apiErrorInTurn = false;
     let gateBlockedInTurn = false;
+    // Tryb uprawnień (§3.6): rekordy `permission-mode` niosą wyłącznie
+    // {type, permissionMode, sessionId} — bez uuid i timestampu, więc jedynym
+    // kotwiczeniem jest pozycja w pliku. Zmianę na tryb luźniejszy przypinamy
+    // do tury, w której zaszła (taxo.permEscalation węzła turn).
+    let permMode: string | null = null;
+    let permEscalationInTurn: string | null = null;
     // Okno ostatnich 5 wywołań — wiązanie `diagnostics.isNew` z edycją (§3.8).
     const recentTools: { nodeId: string; name: string; path: string | null }[] = [];
 
@@ -444,9 +466,15 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
           if (pending > 0) parts.push(`${pending} w tle`);
           emitTaxoNode("turn", nextId("turn"), `tura ${turnIndex}`, parts.join(" · "), line,
             apiErrorInTurn ? "error_api" : "ok",
-            { durationMs, pendingBackgroundAgents: pending, ...(gateBlockedInTurn ? { gateBlocked: true } : {}) });
+            {
+              durationMs,
+              pendingBackgroundAgents: pending,
+              ...(gateBlockedInTurn ? { gateBlocked: true } : {}),
+              ...(permEscalationInTurn !== null ? { permEscalation: permEscalationInTurn } : {}),
+            });
           apiErrorInTurn = false;
           gateBlockedInTurn = false;
+          permEscalationInTurn = null;
         } else if (line.subtype === "compact_boundary") {
           const cm = asRecord(line.raw.compactMetadata);
           const dropped = cm ? asNumber(cm.cumulativeDroppedTokens) : 0;
@@ -504,6 +532,21 @@ export function parseSession(jsonl: string, subagents: SubagentSidecar[] = []): 
       if (line.type === "file-history-snapshot") {
         // Drugie źródło checkpointów wg słownika (§2): snapshot historii plików.
         emitTaxoNode("checkpoint", nextId("chk"), "snapshot plików", "", line, "ok");
+        continue;
+      }
+      if (line.type === "permission-mode") {
+        // Rekord stanu, powtarzany wielokrotnie z tą samą wartością — interesuje
+        // nas wyłącznie ZMIANA na tryb luźniejszy (wyższa ranga). Pierwszy rekord
+        // to stan początkowy sesji, nie eskalacja.
+        const mode = asString(line.raw.permissionMode);
+        if (mode !== null && mode !== permMode) {
+          const prev = permMode !== null ? PERMISSION_MODE_RANK.get(permMode) : undefined;
+          const next = PERMISSION_MODE_RANK.get(mode);
+          if (prev !== undefined && next !== undefined && next > prev) {
+            permEscalationInTurn = `${permMode} → ${mode}`;
+          }
+          permMode = mode;
+        }
         continue;
       }
 

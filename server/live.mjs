@@ -10,18 +10,18 @@
 //
 // W trybie produkcyjnym (obraz Docker) serwuje też statyczny build z ../dist,
 // z fallbackiem na index.html dla nawigacji SPA.
-import { createReadStream, existsSync, readFileSync, statSync, watch } from "node:fs";
+import { existsSync, readFileSync, statSync, watch } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { createServer } from "node:http";
-import { createLineSplitter } from "./lineSplitter.mjs";
+import { createTracker, sse } from "./tracker.mjs";
 import { resolveSessionPath } from "./sessionPath.mjs";
 import { listSessions } from "./sessionsList.mjs";
 import { readSubagentSidecars } from "./subagents.mjs";
 import { createMcpHandler } from "./mcp.mjs";
 
-const PORT = 4517;
+const PORT = Number(process.env.GLASSBOX_PORT ?? 4517);
 // Domyślnie tylko pętla lokalna; kontener ustawia GLASSBOX_HOST=0.0.0.0 (port
 // i tak publikowany na hosta wyłącznie przez mapowanie w compose.yaml).
 const HOST = process.env.GLASSBOX_HOST ?? "127.0.0.1";
@@ -60,66 +60,17 @@ if (singleFileArg) {
   sessionsDir = resolve((process.env.GLASSBOX_SESSIONS_DIR ?? "~/.claude/projects").replace(/^~/, homedir()));
 }
 
-/**
- * @typedef {{
- *   backlog: string[],
- *   clients: Set<import('node:http').ServerResponse>,
- *   offset: number,
- *   reading: boolean,
- * }} Tracker
- */
-
-/** @type {Map<string, Tracker>} klucz: ścieżka bezwzględna pliku */
+/** @type {Map<string, import('./tracker.mjs').Tracker>} klucz: ścieżka bezwzględna pliku */
 const trackers = new Map();
-
-function sse(res, event, data) {
-  res.write(`event: ${event}\ndata: ${data}\n\n`);
-}
 
 /** Tworzy (albo zwraca istniejący) tracker przyrostowego tail dla danego pliku. */
 function getTracker(absPath) {
   let tracker = trackers.get(absPath);
   if (tracker) return tracker;
-  tracker = { backlog: [], clients: new Set(), offset: 0, reading: false, splitter: createLineSplitter() };
+  tracker = createTracker(absPath);
   trackers.set(absPath, tracker);
-
-  function broadcastLine(line) {
-    for (const res of tracker.clients) sse(res, "line", line);
-  }
-
-  function checkForGrowth() {
-    if (tracker.reading) return;
-    let size;
-    try {
-      size = statSync(absPath).size;
-    } catch {
-      return; // plik chwilowo niedostępny (np. w trakcie rotacji) — spróbujemy przy kolejnym tick/evencie
-    }
-    if (size <= tracker.offset) return;
-    tracker.reading = true;
-    const stream = createReadStream(absPath, { start: tracker.offset, end: size - 1, encoding: "utf8" });
-    let chunkAcc = "";
-    stream.on("data", (chunk) => {
-      chunkAcc += chunk;
-    });
-    stream.on("end", () => {
-      tracker.offset = size;
-      const newLines = tracker.splitter.push(chunkAcc);
-      for (const line of newLines) {
-        tracker.backlog.push(line);
-        broadcastLine(line);
-      }
-      tracker.reading = false;
-    });
-    stream.on("error", (err) => {
-      console.error("Błąd odczytu przyrostu:", err.message);
-      tracker.reading = false;
-    });
-  }
-
-  tracker.checkForGrowth = checkForGrowth;
-  watch(absPath, { persistent: true }, () => checkForGrowth());
-  checkForGrowth(); // odczytaj to, co już jest w pliku, zanim ktokolwiek się podłączy
+  watch(absPath, { persistent: true }, () => tracker.checkForGrowth());
+  tracker.checkForGrowth(); // odczytaj to, co już jest w pliku, zanim ktokolwiek się podłączy
   return tracker;
 }
 

@@ -39,6 +39,16 @@ describe("listSessions", () => {
     expect(result.map((r) => r.path)).toEqual(["proj-a/real.jsonl"]);
   });
 
+  it("pomija sidecary subagentów (katalog subagents/)", () => {
+    mkdirSync(join(root, "proj-a", "sesja-1", "subagents"), { recursive: true });
+    writeFileSync(join(root, "proj-a", "sesja-1.jsonl"), "{}\n");
+    writeFileSync(join(root, "proj-a", "sesja-1", "subagents", "agent-x.jsonl"), "{}\n");
+    writeFileSync(join(root, "proj-a", "sesja-1", "subagents", "agent-y.jsonl"), "{}\n");
+
+    const result = listSessions(root);
+    expect(result.map((r) => r.path)).toEqual(["proj-a/sesja-1.jsonl"]);
+  });
+
   it("respektuje limit wpisów", () => {
     for (let i = 0; i < 10; i++) {
       writeFileSync(join(root, "proj-a", `s${i}.jsonl`), "{}\n");
